@@ -1,6 +1,6 @@
 --[[
     CORE FARM — Drill to Earth's Core (place 74507545904779)
-    v1.2.0 — Chest laps → shard hotbar / King's + Phoenix gear → church → lobby.
+    v1.2.1 — Chest laps → shard hotbar / King's + Phoenix gear → church → lobby.
     Compact controls, optional loot filters, and native church saving.
 ]]
 
@@ -34,7 +34,7 @@ local KLZE = {
     game = "Drill to Earth's Core",
     discord = "https://discord.gg/wQRybxxHdX",
     site = "https://klze-hub.pages.dev",
-    version = "1.2.0",
+    version = "1.2.1",
     obsidian = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/",
 }
 
@@ -1684,7 +1684,7 @@ function S.createFarmUi()
             { "shards", "Shards" }, { "gear", "King's / Phoenix gear" },
             { "mythics", "Mythics / Black Hole" }, { "valuableGear", "Valuable tools / armor" },
             { "medkits", "Medkits / bandages" }, { "revive", "Revive kits" },
-            { "ammo", "Ammo (sack)" }, { "fuel", "Fuel (sack)" },
+            { "fuel", "Fuel (sack)" },
             { "ores", "Ores / bars (sack)" }, { "valuables", "Valuables (sack)" },
         }
         for i, entry in ipairs(groups) do
@@ -15500,6 +15500,7 @@ function S.farmLog(action, detail)
         end
         Autofarm._dbgAction = line
         local noisy = key == "glide" or key == "held" or key == "grace" or key == "cycle"
+        if noisy and not Autofarm.debugHud then return end
         local stamp = key
         if key == "held" then
             stamp = "held|" .. tostring(detail or "")
@@ -20090,7 +20091,7 @@ function S.findChestForAutofarm()
     local reach = 15000
     local seenNames = {}
     local function consider(model)
-        if not model or not model.Parent or S.isChestPadlocked(model) then
+        if not model or not model.Parent then
             return
         end
         local record = S.chestAttemptRecord(model)
@@ -20104,36 +20105,12 @@ function S.findChestForAutofarm()
             return
         end
         local dist = S.getFlatDistanceToPlayer(model)
-        if dist <= reach and dist < bestDist then
+        if dist <= reach and dist < bestDist and not S.chestLockStatus(model) then
                     bestDist = dist
             best = model
                 end
             end
     S.forEachWorldChestNode(consider)
-    if not best and S.chestWhitelistWants("core") then
-        local chunks = Workspace:FindFirstChild("Chunks") or Workspace
-        local now = os.clock()
-        local cache = Autofarm._coreNameScan
-        if not cache or now - (cache.at or 0) > 2 then
-            local list = {}
-            for _, desc in ipairs(chunks:GetDescendants()) do
-                if #list >= 30 then
-                    break
-                end
-                if desc:IsA("Model") then
-                    local n = string.lower(desc.Name)
-                    if n:find("core", 1, true) and n:find("chest", 1, true) and not S.isChestInDungeonWave(desc) then
-                        list[#list + 1] = desc
-                    end
-                end
-            end
-            cache = { at = now, list = list }
-            Autofarm._coreNameScan = cache
-        end
-        for _, model in ipairs(cache.list) do
-            consider(model)
-        end
-    end
     if not best and S.chestWhitelistWants("core") and os.clock() - (Autofarm._coreMissNote or 0) > 30 then
         Autofarm._coreMissNote = os.clock()
         local saw = #seenNames > 0 and table.concat(seenNames, ", ") or "none"
@@ -20593,73 +20570,99 @@ function S.isChestEspTarget(inst)
 end
 
 -- Walk all ChestNodes in Workspace, skip Wave folders entirely.
-function S.forEachWorldChestNode(callback)
-    local seen = {}
-
-    local function emit(chest)
-        if not chest or not chest.Parent or seen[chest] then
-            return
-        end
-        local model = S.resolveDungeonChestModel(chest) or chest
-        if seen[model] or not S.isChestEspTarget(model) then
-            return
-        end
-        seen[model] = true
-        callback(model)
-    end
-
-    local function scanChestNodesFolder(folder)
-        if not folder or S.isChestInDungeonWave(folder) then
-            return
-        end
-        for _, node in ipairs(folder:GetChildren()) do
-            if node.Name == "ChestNode" then
-                for _, child in ipairs(node:GetChildren()) do
-                    emit(child)
+function S.ensureChestIndex()
+    if S._unloaded then return nil end
+    local existing = S._chestIndex
+    if existing then return existing end
+    local cache = { entries = setmetatable({}, { __mode = "k" }), pending = setmetatable({}, { __mode = "k" }),
+        queue = {}, head = 1, tail = 0, running = false, inspected = 0 }
+    S._chestIndex = cache
+    local function active() return not S._unloaded and S._chestIndex == cache end
+    local function record(inst)
+        local node = inst
+        for _ = 1, 8 do
+            if not node or node == Workspace then break end
+            if node.Name == "Items" or node == LocalPlayer.Character then return end
+            if (node:IsA("Model") or node:IsA("BasePart")) and not cache.entries[node] then
+                local name = string.lower(node.Name or "")
+                local parent = node.Parent
+                local socket = parent and (parent.Name == "ChestNode" or parent.Name == "ChestNodes")
+                local core = name:find("core", 1, true) and name:find("chest", 1, true)
+                if (socket or core) and not S.coreStorageObject(node) and not S.isChestInDungeonWave(node) then
+                    local model = S.resolveDungeonChestModel(node) or node
+                    if S.isChestEspTarget(model) or core then cache.entries[model] = true end
                 end
-            else
-                emit(node)
             end
+            node = node.Parent
         end
     end
-
-    local function visit(container, depth)
-        if not container or depth > 16 then
-            return
-        end
-        for _, child in ipairs(container:GetChildren()) do
-            local name = tostring(child.Name or "")
-            -- Skip boss Wave loot folders (workspace.*.Wave).
-            if name == "Wave" or name:match("^Wave%d+$") then
-                -- ignore
-            elseif name == "ChestNodes" then
-                scanChestNodesFolder(child)
-            elseif name == "ChestNode" then
-                if not S.isChestInDungeonWave(child) then
-                    for _, nested in ipairs(child:GetDescendants()) do
-                        if nested:IsA("Model") or nested:IsA("BasePart") then
-                        emit(nested)
+    local enqueue, start
+    start = function()
+        if cache.running or not active() then return end
+        cache.running = true
+        task.spawn(function()
+            while active() and cache.head <= cache.tail do
+                local began, count = os.clock(), 0
+                repeat
+                    local inst = cache.queue[cache.head]
+                    cache.queue[cache.head], cache.head = nil, cache.head + 1
+                    cache.pending[inst] = nil
+                    local ok, err = pcall(function()
+                    if inst == Workspace or (inst.Parent and inst:IsDescendantOf(Workspace)) then
+                        record(inst)
+                        local name = inst.Name
+                        local skip = name == "Items" or name == "Wave" or name:match("^Wave%d+$") or inst == LocalPlayer.Character
+                            or (inst:IsA("Model") and Players:GetPlayerFromCharacter(inst))
+                        if not skip and (inst == Workspace or inst:IsA("Model") or inst:IsA("Folder")) then
+                            for _, child in ipairs(inst:GetChildren()) do
+                                if child:IsA("Model") or child:IsA("Folder")
+                                    or ((name == "ChestNode" or name == "ChestNodes") and child:IsA("BasePart")) then enqueue(child, true) end
+                            end
                         end
                     end
-                end
-            elseif depth < 16 and (child:IsA("Folder") or child:IsA("Model")) then
-                visit(child, depth + 1)
+                    end)
+                    if not ok then S.interactionNote("chest index", tostring(err):sub(1, 100)) end
+                    count, cache.inspected = count + 1, cache.inspected + 1
+                until cache.head > cache.tail or count >= 48 or os.clock() - began >= 0.0015 or not active()
+                if cache.head <= cache.tail and active() then task.wait(0.03) end
             end
-        end
+            if cache.head > cache.tail then cache.queue, cache.head, cache.tail = {}, 1, 0 end
+            cache.running = false
+        end)
     end
-
-    pcall(function()
-        visit(Workspace, 0)
+    enqueue = function(inst, insideWorker)
+        if not active() or not inst or cache.pending[inst] then return end
+        cache.pending[inst] = true
+        cache.tail = cache.tail + 1; cache.queue[cache.tail] = inst
+        if not insideWorker then start() end
+    end
+    State.connections.chestIndexAdded = Workspace.DescendantAdded:Connect(function(inst)
+        local parent = inst.Parent
+        if inst:IsA("Model") or inst:IsA("Folder") or inst:IsA("ProximityPrompt")
+            or (inst:IsA("BasePart") and parent and (parent.Name == "ChestNode" or parent.Name == "ChestNodes")) then enqueue(inst) end
     end)
+    State.connections.chestIndexRemoved = Workspace.DescendantRemoving:Connect(function(inst) cache.entries[inst] = nil end)
+    State.connections.chestIndexTagged = CollectionService:GetInstanceAddedSignal("Interactive"):Connect(function(inst) enqueue(inst) end)
+    enqueue(Workspace)
+    return cache
+end
 
-    pcall(function()
-        for _, tagged in ipairs(CollectionService:GetTagged("Interactive")) do
-            local model = S.resolveDungeonChestModel(tagged) or tagged
-            if S.isChestEspTarget(model) then
-                emit(model)
-            end
-        end
-    end)
+function S.chestLockStatus(chest)
+    S._chestLockCache = S._chestLockCache or setmetatable({}, { __mode = "k" })
+    local now, cached = os.clock(), S._chestLockCache[chest]
+    if cached and now - cached.at < 0.75 then return cached.locked end
+    local locked = S.isChestPadlocked(chest)
+    S._chestLockCache[chest] = { at = now, locked = locked }
+    return locked
+end
+
+function S.forEachWorldChestNode(callback)
+    local cache = S.ensureChestIndex()
+    if not cache then return end
+    for model in pairs(cache.entries) do
+        if not model.Parent or not model:IsDescendantOf(Workspace) then cache.entries[model] = nil
+        elseif not S.coreStorageObject(model) and not S.isChestInDungeonWave(model) then callback(model) end
+    end
 end
 
 function S.collectEspChests()
@@ -22204,17 +22207,30 @@ function S.setSpeedHack(enabled)
 end
 
 function S.setNoclip(enabled)
-    State.noclip = enabled
-    S.disconnectAll("noclip")
+    State.noclip = enabled == true
+    for _, key in ipairs({ "noclip", "noclipAdded", "noclipRemoved", "noclipCharacter" }) do S.disconnectAll(key) end
+    for part, original in pairs(State._noclipParts or {}) do
+        if part.Parent and part.CanCollide ~= original then part.CanCollide = original end
+    end
+    State._noclipParts = setmetatable({}, { __mode = "k" })
     if not enabled then return end
-
+    local function attach(char)
+        if S._unloaded or not State.noclip then return end
+        S.disconnectAll("noclipAdded"); S.disconnectAll("noclipRemoved")
+        local parts = setmetatable({}, { __mode = "k" }); State._noclipParts = parts
+        local function add(part)
+            if part:IsA("BasePart") and parts[part] == nil then parts[part] = part.CanCollide end
+        end
+        State.connections.noclipAdded = char.DescendantAdded:Connect(add)
+        State.connections.noclipRemoved = char.DescendantRemoving:Connect(function(part) parts[part] = nil end)
+        for _, part in ipairs(char:GetDescendants()) do add(part) end
+    end
+    if LocalPlayer.Character then attach(LocalPlayer.Character) end
+    State.connections.noclipCharacter = LocalPlayer.CharacterAdded:Connect(attach)
     State.connections.noclip = RunService.Stepped:Connect(function()
-        local char = LocalPlayer.Character
-        if not char then return end
-        for _, part in ipairs(char:GetDescendants()) do
-            if part:IsA("BasePart") then
-                part.CanCollide = false
-            end
+        if S._unloaded or not State.noclip then return end
+        for part in pairs(State._noclipParts) do
+            if part.Parent and part.CanCollide then part.CanCollide = false end
         end
     end)
 end
@@ -23667,6 +23683,7 @@ function S.tryLobbyChestAutoBuy(snap)
 end
 
 function S.tickLobbyChestWatch()
+    if S._unloaded or game.PlaceId ~= LOBBY_PLACE or not LobbyChestWatch.autoBuy then return end
     local snap = S.scanLobbyChestShop()
     local line = S.formatLobbyChestWatchStatus(snap)
     if line ~= LobbyChestWatch._lastUiText then
@@ -24492,7 +24509,7 @@ function S.collectorDescribe(item)
     elseif name:find("revivekit", 1, true) or category:find("revivekit", 1, true) then group, kind = "revive", "Tool"
     elseif name:find("medkit", 1, true) or name:find("bandage", 1, true)
         or category:find("medkit", 1, true) then group, kind = "medkits", "Tool"
-    elseif name:find("ammo", 1, true) or category:find("ammo", 1, true) then group, mode = "ammo", "Sack"
+    elseif name:find("ammo", 1, true) or category:find("ammo", 1, true) then return nil
     elseif S.isFuelItem(item) then group, mode = "fuel", "Sack"
     elseif category:find("ore", 1, true) or category == "bar" or name:find("goldbar", 1, true)
         or name:find("ironbar", 1, true) or name:find("steelbar", 1, true) then group, mode = "ores", "Sack"
@@ -26271,7 +26288,7 @@ function S.buildCoreTab(Window)
         end,
     })
     tab:CreateParagraph({
-        Title = "Core v1.2.0",
+        Title = "Core v1.2.1",
         Content = "Starts automatically without a config. After Laps (default 2): collect every found shard into the hotbar, equip King's/Phoenix gear, then open the church menu and confirm Teleport to return to the lobby and repeat. Other loot is ignored. Pickups are paced; no per-frame loot scans.",
     })
 end
@@ -27515,8 +27532,9 @@ end)
 -- Character respawn hooks
 local respawnPlayer = LocalPlayer or Players.LocalPlayer
 if respawnPlayer then
-respawnPlayer.CharacterAdded:Connect(function(char)
+State.connections.coreRespawn = respawnPlayer.CharacterAdded:Connect(function(char)
     task.wait(0.5)
+    if S._unloaded then return end
     if State.connections.speed then
         S.applySpeed()
     end
@@ -27535,7 +27553,8 @@ end
 
 S.hubLog(HUB_NAME .. " started | PlaceId " .. game.PlaceId)
 
-workspace:GetAttributeChangedSignal("InCutScene"):Connect(function()
+State.connections.coreCutscene = workspace:GetAttributeChangedSignal("InCutScene"):Connect(function()
+    if S._unloaded then return end
     if workspace:GetAttribute("InCutScene") == true then
         task.defer(function()
             pcall(S.coreSkipCutscene)
