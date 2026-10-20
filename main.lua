@@ -1,7 +1,7 @@
 --[[
     CORE FARM — Drill to Earth's Core (place 74507545904779)
-    v1.1.42 — Chest laps → shard hotbar / King's + Phoenix gear → church → lobby.
-    Shop watch and the old depth overlay are not included.
+    v1.2.0 — Chest laps → shard hotbar / King's + Phoenix gear → church → lobby.
+    Compact controls, optional loot filters, and native church saving.
 ]]
 
 if typeof(getgenv) == "function" then
@@ -34,7 +34,7 @@ local KLZE = {
     game = "Drill to Earth's Core",
     discord = "https://discord.gg/wQRybxxHdX",
     site = "https://klze-hub.pages.dev",
-    version = "1.1.42",
+    version = "1.2.0",
     obsidian = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/",
 }
 
@@ -693,7 +693,8 @@ function S.coreIsCycleFlag(name)
 end
 
 function S.coreInventoryLocked()
-    return not S._unloaded and type(CoreFarm) == "table" and (CoreFarm._ownedRun == true or CoreFarm._leaving == true)
+    return not S._unloaded and ((type(CoreFarm) == "table" and (CoreFarm._ownedRun == true or CoreFarm._leaving == true))
+        or (S._collector and S._collector.busy == true) or S._chestInteraction ~= nil)
 end
 
 
@@ -1467,16 +1468,24 @@ function S.attachKlzeUiAdapter(Window, Library)
     return rf
 end
 
+S._collector = {
+    groups = { shards = false, gear = false, mythics = false, medkits = false, revive = false, valuableGear = false,
+        ammo = false, fuel = false, ores = false, valuables = false },
+    range = 300, minValue = 1000, batch = 3, equip = true, restore = true, freeSlots = true,
+    legendaryFirst = true, autoChurch = true, generation = 1, entries = {}, buttons = {},
+    busy = false, picked = 0, failed = 0,
+}
+
 function S.createFarmUi()
-    local ui = { connections = {}, cache = {}, closed = false }
+    local ui = { connections = {}, cache = {}, pages = {}, tabs = {}, closed = false }
     local library = { Unloaded = false, UnloadSignals = {}, Toggles = {}, Options = {} }
     local rf = { Flags = {} }
+    local W, H = 560, 514
     local C = {
-        background = Color3.fromHex("0e131b"), panel = Color3.fromHex("161e2a"),
-        border = Color3.fromHex("2b3748"), raised = Color3.fromHex("202e40"),
-        red = Color3.fromHex("8eb8ef"), deepRed = Color3.fromHex("365b8c"),
-        mutedRed = Color3.fromHex("2c4465"), white = Color3.fromHex("edf3fc"),
-        muted = Color3.fromHex("a6b6cb"), faint = Color3.fromHex("7e90a8"),
+        background = Color3.fromHex("18191c"), panel = Color3.fromHex("1e1f23"),
+        border = Color3.fromHex("34363c"), raised = Color3.fromHex("282a30"),
+        white = Color3.fromHex("e8e9ed"), muted = Color3.fromHex("a7aab3"),
+        faint = Color3.fromHex("797e89"), accent = Color3.fromHex("bacada"),
     }
     ui.colors, ui.library = C, library
     S._farmUi = ui
@@ -1495,60 +1504,80 @@ function S.createFarmUi()
         return node
     end
     local function round(node, radius)
-        create("UICorner", "Corner", node, { CornerRadius = UDim.new(0, radius or 9) })
+        create("UICorner", "Corner", node, { CornerRadius = UDim.new(0, radius or 4) })
     end
-    local function stroke(node, color, thickness)
-        return create("UIStroke", "Outline", node, {
-            Color = color or C.border, Thickness = thickness or 1,
-            ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
-        })
+    local function stroke(node)
+        create("UIStroke", "Outline", node, { Color = C.border, Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border })
     end
     local function box(name, parent, x, y, w, h, color, radius)
-        local node = create("Frame", name, parent, {
-            Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(w, h),
-            BackgroundColor3 = color or C.panel, BorderSizePixel = 0,
-        })
+        local node = create("Frame", name, parent, { Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(w, h),
+            BackgroundColor3 = color or C.background, BorderSizePixel = 0 })
         if radius then round(node, radius) end
         return node
     end
-    local function text(name, parent, x, y, w, h, value, size, color, font)
-        return create("TextLabel", name, parent, {
-            Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(w, h),
-            BackgroundTransparency = 1, BorderSizePixel = 0,
-            Text = value or "", TextColor3 = color or C.white,
-            TextSize = size or 12, Font = font or Enum.Font.Gotham,
+    local function text(name, parent, x, y, w, h, caption, size, color, bold)
+        return create("TextLabel", name, parent, { Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(w, h),
+            BackgroundTransparency = 1, BorderSizePixel = 0, Text = caption or "", TextColor3 = color or C.white,
+            TextSize = size or 12, Font = bold and Enum.Font.GothamMedium or Enum.Font.Gotham,
             TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Center,
-            TextTruncate = Enum.TextTruncate.AtEnd,
-        })
+            TextTruncate = Enum.TextTruncate.AtEnd })
     end
-    local function button(name, parent, x, y, w, h, caption, color)
-        local node = create("TextButton", name, parent, {
-            Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(w, h),
-            BackgroundColor3 = color or C.raised, BorderSizePixel = 0,
-            AutoButtonColor = false, Active = true, Text = caption,
-            TextColor3 = C.white, TextSize = 12, Font = Enum.Font.GothamBold,
-        })
-        round(node, 7)
+    local function button(name, parent, x, y, w, h, caption)
+        local node = create("TextButton", name, parent, { Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(w, h),
+            BackgroundColor3 = C.raised, BorderSizePixel = 0, AutoButtonColor = true, Active = true,
+            Text = caption, TextColor3 = C.white, TextSize = 12, Font = Enum.Font.Gotham })
+        round(node); stroke(node)
         return node
-    end
-    local function hover(node, normal, highlighted)
-        connect(node.MouseEnter, function() node.BackgroundColor3 = highlighted end)
-        connect(node.MouseLeave, function() node.BackgroundColor3 = normal end)
     end
     local function setText(node, value)
         value = tostring(value or "")
-        if node.Text ~= value then node.Text = value end
+        if node and node.Text ~= value then node.Text = value end
     end
     local function flag(name, value, paint)
-        local element = { Flag = name, CurrentValue = value, _obsidian = { Value = value } }
-        function element:Set(nextValue)
+        local control = { Flag = name, CurrentValue = value, _obsidian = { Value = value } }
+        function control:Set(nextValue)
             self.CurrentValue, self._obsidian.Value = nextValue, nextValue
             if paint then paint(nextValue) end
         end
-        rf.Flags[name] = element
-        if type(value) == "boolean" then library.Toggles[name] = element._obsidian
-        else library.Options[name] = element._obsidian end
-        return element
+        rf.Flags[name] = control
+        if type(value) == "boolean" then library.Toggles[name] = control._obsidian
+        else library.Options[name] = control._obsidian end
+        return control
+    end
+    local function check(parent, x, y, width, name, caption, initial, callback)
+        local row = button(name, parent, x, y, width, 28, "")
+        row.BackgroundTransparency = 1
+        local outline = row:FindFirstChild("Outline"); if outline then outline:Destroy() end
+        local mark = button("Check", row, 0, 5, 18, 18, "")
+        mark.Active, mark.AutoButtonColor, mark.TextSize = false, false, 12
+        text("Label", row, 28, 0, width - 28, 28, caption)
+        local control = flag(name, initial, function(value)
+            mark.Text = value and "x" or ""
+            mark.BackgroundColor3 = value and C.raised or C.background
+        end)
+        control:Set(initial)
+        local function activate()
+            local value = not control.CurrentValue
+            control:Set(value); callback(value)
+        end
+        connect(row.Activated, activate)
+        connect(mark.Activated, activate)
+        return control
+    end
+    local function stepper(parent, y, name, caption, initial, minimum, maximum, step, callback)
+        text(name .. "Label", parent, 0, y, 300, 30, caption)
+        local minus = button(name == "dtec_core_rescan" and "DecreaseLaps" or name .. "Minus", parent, 392, y, 30, 30, "-")
+        local value = text(name == "dtec_core_rescan" and "LapsValue" or name .. "Value", parent, 422, y, 76, 30, tostring(initial))
+        value.TextXAlignment = Enum.TextXAlignment.Center
+        local plus = button(name == "dtec_core_rescan" and "IncreaseLaps" or name .. "Plus", parent, 498, y, 30, 30, "+")
+        local control = flag(name, initial, function(v) setText(value, v) end)
+        local function change(delta)
+            local nextValue = math.clamp((tonumber(control.CurrentValue) or initial) + delta * step, minimum, maximum)
+            control:Set(nextValue); callback(nextValue)
+        end
+        connect(minus.Activated, function() change(-1) end)
+        connect(plus.Activated, function() change(1) end)
+        return control
     end
     function library:OnUnload(callback) self.UnloadSignals[#self.UnloadSignals + 1] = callback end
     function library:Unload()
@@ -1572,14 +1601,12 @@ function S.createFarmUi()
     end
     function library:Toggle()
         if not ui.main then return end
-        ui.main.Visible = not ui.main.Visible
-        ui.restore.Visible = not ui.main.Visible
-        if ui.popup then ui.popup.Visible, ui.scrim.Visible = false, false end
-        ui.drag = nil
+        ui.main.Visible = not ui.main.Visible; ui.restore.Visible = not ui.main.Visible
+        ui.popup.Visible, ui.scrim.Visible, ui.drag = false, false, nil
     end
     function rf:Notify(opts)
         opts = opts or {}
-        library:Notify((opts.Title and opts.Title .. " · " or "") .. tostring(opts.Content or ""), opts.Duration)
+        library:Notify((opts.Title and opts.Title .. ": " or "") .. tostring(opts.Content or ""), opts.Duration)
     end
     function rf:CreateWindow() return self end
     function rf.LoadConfiguration() end
@@ -1588,193 +1615,157 @@ function S.createFarmUi()
         if self.main then return end
         local playerGui = LocalPlayer:FindFirstChild("PlayerGui") or LocalPlayer:WaitForChild("PlayerGui", 15)
         if not playerGui then error("PlayerGui is not ready") end
-        local screen = create("ScreenGui", "KLZE_CoreFarm", playerGui, {
-            ResetOnSpawn = false, IgnoreGuiInset = true, DisplayOrder = 100,
-            ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
-        })
+        local screen = create("ScreenGui", "KLZE_CoreFarm", playerGui, { ResetOnSpawn = false, IgnoreGuiInset = true,
+            DisplayOrder = 100, ZIndexBehavior = Enum.ZIndexBehavior.Sibling })
         library.ScreenGui = screen
-        local main = box("FarmDashboard", screen, 0, 0, 820, 584, C.background, 14)
+        local main = box("FarmWindow", screen, 0, 0, W, H, C.background, 6)
         main.AnchorPoint, main.Position, main.Active = Vector2.new(0.5, 0.5), UDim2.fromScale(0.5, 0.5), true
-        stroke(main, C.border)
+        stroke(main)
         ui.main, ui.scale = main, create("UIScale", "ResponsiveScale", main, { Scale = 1 })
-        -- Header artwork is made from native shapes and text, without image assets.
-        local header = button("DragHeader", main, 0, 0, 820, 88, "", Color3.fromHex("192535"))
-        header:FindFirstChild("Corner").CornerRadius = UDim.new(0, 14)
-        create("UIGradient", "HeaderShade", header, {
-            Color = ColorSequence.new(Color3.fromHex("1b2c43"), Color3.fromHex("141d2a")), Rotation = 0,
-        })
-        box("CrimsonEdge", main, 24, 0, 772, 2, C.red)
-        local emblem = box("FarmEmblem", main, 24, 22, 48, 48, Color3.fromHex("253a55"), 9)
-        stroke(emblem, C.mutedRed)
-        text("FarmMonogram", emblem, 5, 6, 41, 36, "CF", 22, C.red, Enum.Font.GothamBlack)
-        box("EmblemLine", emblem, 11, 38, 26, 2, C.red, 1)
-        text("Brand", main, 91, 21, 410, 34, "CORE FARM", 25, C.white, Enum.Font.GothamBlack)
-        text("Tagline", main, 93, 56, 400, 15, "CHESTS / LOOT / SAVE", 10, C.muted, Enum.Font.GothamBold)
-        text("Game", main, 535, 29, 180, 18, "DRILL TO EARTH'S CORE", 10, C.muted, Enum.Font.Code)
-        local hide = button("HideMenu", main, 734, 25, 62, 30, "HIDE", C.raised)
-        hover(hide, C.raised, C.mutedRed)
+        local header = button("DragHeader", main, 1, 1, W - 2, 41, "")
+        header.BackgroundColor3 = C.panel
+        text("Title", header, 15, 0, 260, 41, "Autofarm", 15, C.white, true)
+        text("Version", header, 416, 0, 80, 41, KLZE.version, 10, C.faint)
+        local hide = button("HideMenu", header, 510, 8, 30, 25, "-")
         connect(hide.Activated, function() library:Toggle() end)
-        box("NavigationRule", main, 24, 130, 772, 1, C.border)
-        box("ActiveUnderline", main, 24, 129, 96, 2, C.red)
-        text("PageName", main, 24, 99, 180, 22, "AUTOFARM", 12, C.white, Enum.Font.GothamBold)
-        text("QueueMode", main, 558, 100, 238, 20, "UNRANKED  /  SOLO", 10, C.muted, Enum.Font.Code).TextXAlignment = Enum.TextXAlignment.Right
-
-        local cycle = box("CycleCard", main, 24, 144, 488, 190, C.panel, 10); stroke(cycle)
-        text("CycleHeading", cycle, 20, 16, 290, 20, "AUTOMATIC CYCLE", 10, C.red, Enum.Font.GothamBold)
-        ui.master = button("CycleToggle", cycle, 370, 13, 98, 30, "ON", C.deepRed)
-        ui.status = text("CycleStatus", cycle, 20, 48, 448, 44, "Starting autofarm", 21, C.white, Enum.Font.GothamBold)
-        ui.status.TextWrapped, ui.status.TextTruncate = true, Enum.TextTruncate.None
-        ui.steps = {}
-        for index, name in ipairs({ "CHESTS", "LOOT", "CHURCH", "LOBBY" }) do
-            local step = box("Phase" .. index, cycle, 20 + (index - 1) * 113, 104, 109, 25, C.raised, 4)
-            local caption = text("Caption", step, 0, 0, 109, 25, name, 9, C.muted, Enum.Font.GothamBold)
-            caption.TextXAlignment = Enum.TextXAlignment.Center
-            ui.steps[index] = { box = step, caption = caption }
-        end
-        ui.progressText = text("LapProgress", cycle, 20, 143, 448, 16, "0 / 2 chest laps complete", 11, C.muted)
-        local track = box("ProgressTrack", cycle, 20, 167, 448, 5, C.raised, 3)
-        ui.progressFill = box("ProgressFill", track, 0, 0, 0, 5, C.red, 3)
-
-        local kept = box("KeptCard", main, 24, 350, 236, 94, C.panel, 10); stroke(kept)
-        text("Heading", kept, 17, 12, 204, 16, "ITEMS COLLECTED", 9, C.muted, Enum.Font.GothamBold)
-        ui.kept = text("KeptValue", kept, 17, 31, 200, 42, "0", 31, C.white, Enum.Font.GothamBold)
-        local missed = box("MissedCard", main, 276, 350, 236, 94, C.panel, 10); stroke(missed)
-        text("Heading", missed, 17, 12, 204, 16, "PICKUPS MISSED", 9, C.muted, Enum.Font.GothamBold)
-        ui.missed = text("MissedValue", missed, 17, 31, 200, 42, "0", 31, C.white, Enum.Font.GothamBold)
-
-        local actions = box("RecoveryCard", main, 24, 460, 488, 70, C.panel, 10); stroke(actions)
-        ui.confirm = button("ConfirmChurch", actions, 14, 15, 285, 40, "Retry church return", C.deepRed)
-        hover(ui.confirm, C.deepRed, C.red)
-        local copy = button("CopyDebug", actions, 311, 15, 163, 40, "Copy Debug", C.raised)
-        stroke(copy); hover(copy, C.raised, C.mutedRed)
-        connect(ui.confirm.Activated, function() S.coreRetryChurchReturn() end)
-        connect(copy.Activated, S.coreCopyDebug)
-
-        local setup = box("SetupCard", main, 536, 144, 260, 244, C.panel, 10); stroke(setup)
-        text("SetupHeading", setup, 18, 16, 224, 20, "RUN SETUP", 10, C.red, Enum.Font.GothamBold)
-        text("LapsLabel", setup, 18, 48, 150, 18, "Chest laps", 12)
-        local stepper = box("LapStepper", setup, 18, 74, 224, 36, C.background, 7); stroke(stepper)
-        local minus = button("DecreaseLaps", stepper, 2, 2, 40, 32, "−", C.raised)
-        local plus = button("IncreaseLaps", stepper, 182, 2, 40, 32, "+", C.raised)
-        ui.lapsValue = text("LapsValue", stepper, 44, 0, 136, 36, tostring(CoreFarm.rescans or 2), 15, C.white, Enum.Font.GothamBold)
-        ui.lapsValue.TextXAlignment = Enum.TextXAlignment.Center
-        text("ChestTypesLabel", setup, 18, 124, 224, 18, "Chest types", 12)
-        ui.typesButton = button("ChestTypes", setup, 18, 150, 224, 36, "All chest types  ▾", C.background)
-        stroke(ui.typesButton)
-        text("FilterHeading", setup, 18, 201, 224, 13, "AUTO-KEEP", 9, C.faint, Enum.Font.GothamBold)
-        text("FilterText", setup, 18, 220, 224, 14, "Shards · King's · Phoenix", 11, C.muted)
-
-        local utilities = box("UtilityCard", main, 536, 404, 260, 126, C.panel, 10); stroke(utilities)
-        text("UtilityHeading", utilities, 18, 11, 224, 18, "ESSENTIALS", 9, C.red, Enum.Font.GothamBold)
-        local function toggleRow(label, y, name, initial, callback)
-            text(name .. "Label", utilities, 18, y, 160, 26, label, 11, C.white)
-            local toggle = button(name, utilities, 194, y + 3, 48, 22, "", C.raised)
-            toggle:FindFirstChild("Corner").CornerRadius = UDim.new(0, 11)
-            local dot = box("Thumb", toggle, 3, 3, 16, 16, C.white, 8)
-            local control = flag(name, initial, function(value)
-                toggle.BackgroundColor3 = value and C.deepRed or C.raised
-                dot.Position = UDim2.fromOffset(value and 29 or 3, 3)
+        box("HeaderRule", main, 0, 42, W, 1, C.border)
+        for i, entry in ipairs({ { "Run", "Run" }, { "Loot", "Loot" }, { "Options", "Options" } }) do
+            local key = entry[1]
+            local tab = button("Tab" .. key, main, 16 + (i - 1) * 102, 51, 94, 28, entry[2])
+            local page = box(key .. "Page", main, 16, 96, 528, 370, C.background)
+            page.Visible = i == 1
+            ui.pages[key], ui.tabs[key] = page, tab
+            connect(tab.Activated, function()
+                for name, p in pairs(ui.pages) do
+                    p.Visible = name == key
+                    ui.tabs[name].BackgroundColor3 = name == key and C.raised or C.background
+                    ui.tabs[name].TextColor3 = name == key and C.white or C.muted
+                end
+                ui.popup.Visible, ui.scrim.Visible = false, false
             end)
-            control:Set(initial)
-            connect(toggle.Activated, function()
-                local value = not control.CurrentValue
-                control:Set(value); callback(value)
-            end)
+            tab.BackgroundColor3, tab.TextColor3 = i == 1 and C.raised or C.background, i == 1 and C.white or C.muted
         end
-        toggleRow("Anti-AFK", 39, "klze_autofarm_anti_afk", true, function(value)
-            if S._klzeHub then pcall(S._klzeHub.setAntiAfk, value) end
-        end)
-        S._quietNotifications = S._quietNotifications ~= false
-        toggleRow("Quiet notifications", 77, "klze_quiet_notifications", S._quietNotifications, function(value)
-            S._quietNotifications = value
-        end)
-
-        box("FooterRule", main, 24, 551, 772, 1, C.border)
-        text("FooterBrand", main, 24, 559, 300, 16, "CORE FARM  /  v" .. KLZE.version, 9, C.faint, Enum.Font.Code)
-        text("Shortcut", main, 331, 559, 300, 16, "RIGHT CTRL  ·  SHOW / HIDE", 9, C.muted, Enum.Font.Code)
-        local unload = button("UnloadScript", main, 711, 556, 85, 22, "UNLOAD", C.background)
-        unload.TextColor3, unload.TextSize = C.muted, 9
-        connect(unload.Activated, function() library:Unload() end)
-
-        ui.restore = button("RestoreFarm", screen, 18, 100, 144, 36, "CORE FARM", C.panel)
-        stroke(ui.restore, C.mutedRed); ui.restore.TextColor3, ui.restore.Visible = C.red, false
-        connect(ui.restore.Activated, function() library:Toggle() end)
-        ui.toast = box("Notification", screen, 0, 0, 380, 52, C.panel, 9)
-        ui.toast.AnchorPoint, ui.toast.Position = Vector2.new(1, 1), UDim2.new(1, -20, 1, -20)
-        stroke(ui.toast, C.mutedRed); ui.toast.Visible = false
-        box("ToastAccent", ui.toast, 0, 9, 3, 34, C.red, 1)
-        ui.toastText = text("ToastText", ui.toast, 16, 6, 350, 40, "", 11, C.white)
-        ui.toastText.TextWrapped = true
-
-        local master = flag("dtec_core_open", CoreFarm.enabled == true, function(value)
-            ui.master.BackgroundColor3 = value and C.deepRed or C.raised
-            setText(ui.master, value and "●  ON" or "○  OFF")
-        end)
+        local run, loot, options = ui.pages.Run, ui.pages.Loot, ui.pages.Options
+        ui.status = text("CycleStatus", run, 0, 0, 408, 30, "Starting", 13, C.white, true)
+        ui.master = button("CycleToggle", run, 432, 0, 96, 30, "Stop")
+        local master = flag("dtec_core_open", CoreFarm.enabled == true, function(value) setText(ui.master, value and "Stop" or "Start") end)
         master:Set(CoreFarm.enabled == true)
         connect(ui.master.Activated, function()
-            local value = not master.CurrentValue
-            master:Set(value); S.coreMenuSetEnabled(value)
+            local value = not master.CurrentValue; master:Set(value); S.coreMenuSetEnabled(value)
         end)
-        local laps = flag("dtec_core_rescan", CoreFarm.rescans or 2, function(value) setText(ui.lapsValue, value) end)
-        local function changeLaps(delta)
-            local value = math.clamp((tonumber(laps.CurrentValue) or 2) + delta, 1, 10)
-            laps:Set(value); CoreFarm.rescans = value; S.coreMenuRefresh()
-        end
-        connect(minus.Activated, function() changeLaps(-1) end)
-        connect(plus.Activated, function() changeLaps(1) end)
+        text("LapsCaption", run, 0, 48, 160, 16, "Laps", 11, C.muted)
+        ui.progressText = text("LapProgress", run, 0, 66, 160, 22, "0 / 2", 14)
+        text("CollectedCaption", run, 180, 48, 160, 16, "Collected", 11, C.muted)
+        ui.kept = text("KeptValue", run, 180, 66, 160, 22, "0", 14)
+        text("MissedCaption", run, 360, 48, 168, 16, "Missed", 11, C.muted)
+        ui.missed = text("MissedValue", run, 360, 66, 168, 22, "0", 14)
+        local track = box("ProgressTrack", run, 0, 98, 528, 2, C.border)
+        ui.progressFill = box("ProgressFill", track, 0, 0, 0, 2, C.accent)
+        stepper(run, 119, "dtec_core_rescan", "Chest laps", CoreFarm.rescans or 2, 1, 10, 1, function(v)
+            CoreFarm.rescans = v; S.coreMenuRefresh()
+        end)
+        text("ChestTypesLabel", run, 0, 163, 220, 30, "Chest types")
+        ui.typesButton = button("ChestTypes", run, 256, 163, 272, 30, "All types")
+        local collect = button("CollectShards", run, 0, 219, 256, 32, "Collect shards")
+        local selected = button("CollectSelected", run, 272, 219, 256, 32, "Collect selected")
+        connect(collect.Activated, function() S.collectorRequest({ shards = true }) end)
+        connect(selected.Activated, function() S.collectorRequest() end)
+        local save = button("SaveReturn", run, 0, 265, 168, 32, "Save & return")
+        ui.confirm = button("ConfirmChurch", run, 180, 265, 168, 32, "Retry return")
+        local debug = button("CopyDebug", run, 360, 265, 168, 32, "Copy log")
+        connect(save.Activated, S.coreSaveReturnNow)
+        connect(ui.confirm.Activated, S.coreRetryChurchReturn)
+        connect(debug.Activated, S.coreCopyDebug)
+        text("ActivityLabel", run, 0, 321, 528, 16, "Activity", 11, C.faint)
+        ui.activity = text("Activity", run, 0, 340, 528, 20, "", 11, C.muted)
 
-        local selection = S.chestSelectionList(CoreFarm.chestTypes)
+        local c = S._collector
+        local groups = {
+            { "shards", "Shards" }, { "gear", "King's / Phoenix gear" },
+            { "mythics", "Mythics / Black Hole" }, { "valuableGear", "Valuable tools / armor" },
+            { "medkits", "Medkits / bandages" }, { "revive", "Revive kits" },
+            { "ammo", "Ammo (sack)" }, { "fuel", "Fuel (sack)" },
+            { "ores", "Ores / bars (sack)" }, { "valuables", "Valuables (sack)" },
+        }
+        for i, entry in ipairs(groups) do
+            local group = entry[1]
+            check(loot, (i - 1) % 2 * 272, math.floor((i - 1) / 2) * 34, 256,
+                "dtec_collect_" .. group, entry[2], c.groups[group] == true, function(v) c.groups[group] = v end)
+        end
+        box("LootRule", loot, 0, 180, 528, 1, C.border)
+        stepper(loot, 197, "dtec_collect_range", "Pickup range", c.range, 25, 3000, 100, function(v) c.range = v end)
+        stepper(loot, 239, "dtec_collect_minValue", "Minimum value", c.minValue, 0, 10000, 100, function(v) c.minValue = v end)
+        stepper(loot, 281, "dtec_collect_batch", "Pickups per pass", c.batch, 1, 8, 1, function(v) c.batch = v end)
+        ui.lootStatus = text("LootStatus", loot, 0, 335, 528, 32, "Optional pickups between chest visits.", 11, C.muted)
+
+        check(options, 0, 0, 528, "dtec_collect_equip", "Equip collected tools", c.equip, function(v) c.equip = v end)
+        check(options, 0, 37, 528, "dtec_collect_freeSlots", "Replace weaker tools when full", c.freeSlots, function(v) c.freeSlots = v end)
+        check(options, 0, 74, 528, "dtec_collect_legendaryFirst", "Legendary shards first", c.legendaryFirst, function(v) c.legendaryFirst = v end)
+        check(options, 0, 111, 528, "klze_autofarm_anti_afk", "Anti-AFK", true, function(v)
+            if S._klzeHub then pcall(S._klzeHub.setAntiAfk, v) end
+        end)
+        check(options, 0, 148, 528, "klze_fullbright", "Fullbright", false, function(v) pcall(S.setFullbright, v) end)
+        S._quietNotifications = S._quietNotifications ~= false
+        check(options, 0, 185, 528, "klze_quiet_notifications", "Quiet notifications", S._quietNotifications, function(v) S._quietNotifications = v end)
+        local rescan = button("RescanLoot", options, 0, 241, 256, 32, "Rescan selected loot")
+        local stopLoot = button("StopCollection", options, 272, 241, 256, 32, "Stop collection")
+        connect(rescan.Activated, function() S.collectorRequest() end)
+        connect(stopLoot.Activated, S.collectorStop)
+        local retryChests = button("RetryChests", options, 0, 293, 256, 30, "Retry missed chests")
+        connect(retryChests.Activated, S.coreRetryMissedChests)
+        local unload = button("UnloadScript", options, 272, 293, 256, 30, "Unload")
+        connect(unload.Activated, function() library:Unload() end)
+        text("Shortcut", options, 0, 345, 528, 20, "Right Ctrl: show / hide", 11, C.faint)
+
+        box("FooterRule", main, 0, 479, W, 1, C.border)
+        text("QueueMode", main, 16, 485, 220, 18, "Unranked / Solo", 10, C.muted)
+        ui.footerStatus = text("FooterStatus", main, 240, 485, 304, 18, "", 10, C.faint)
+        ui.footerStatus.TextXAlignment = Enum.TextXAlignment.Right
+        ui.restore = button("RestoreFarm", screen, 18, 100, 108, 30, "Autofarm")
+        ui.restore.Visible = false; connect(ui.restore.Activated, function() library:Toggle() end)
+        ui.toast = box("Notification", screen, 0, 0, 360, 50, C.panel, 4)
+        ui.toast.AnchorPoint, ui.toast.Position, ui.toast.Visible = Vector2.new(1, 1), UDim2.new(1, -18, 1, -18), false
+        stroke(ui.toast)
+        ui.toastText = text("ToastText", ui.toast, 12, 5, 336, 40, "", 11); ui.toastText.TextWrapped = true
+
+        local selection, chosen, rows = S.chestSelectionList(CoreFarm.chestTypes), {}, {}
+        for _, name in ipairs(selection) do chosen[name] = true end
         local types = flag("dtec_core_chest_types", selection)
-        local chosen, rows = {}, {}
-        for _, label in ipairs(selection) do chosen[label] = true end
-        ui.scrim = button("DismissChestTypes", main, 0, 0, 820, 584, "", C.background)
+        ui.scrim = button("DismissChestTypes", main, 0, 0, W, H, "")
         ui.scrim.BackgroundTransparency, ui.scrim.ZIndex, ui.scrim.Visible = 1, 40, false
-        local popupHeight = math.min(224, 40 + #CHEST_TYPE_OPTIONS * 29)
-        ui.popup = box("ChestTypePicker", main, 552, 300, 224, popupHeight, C.background, 8)
-        ui.popup.ZIndex, ui.popup.Visible = 50, false
-        stroke(ui.popup, C.mutedRed)
-        text("PickerHeading", ui.popup, 12, 8, 200, 18, "KEEP AT LEAST ONE TYPE", 8, C.faint, Enum.Font.GothamBold).ZIndex = 51
+        ui.popup = box("ChestTypePicker", main, 272, 180, 272, 262, C.panel, 4)
+        ui.popup.ZIndex, ui.popup.Visible = 50, false; stroke(ui.popup)
         local scroll = create("ScrollingFrame", "ChestTypeOptions", ui.popup, {
-            Position = UDim2.fromOffset(8, 32), Size = UDim2.new(1, -16, 1, -38),
-            BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 3,
-            ScrollBarImageColor3 = C.deepRed, CanvasSize = UDim2.fromOffset(0, #CHEST_TYPE_OPTIONS * 29),
-            ZIndex = 51,
-        })
+            Position = UDim2.fromOffset(6, 6), Size = UDim2.new(1, -12, 1, -12), BackgroundTransparency = 1,
+            BorderSizePixel = 0, ScrollBarThickness = 3, ScrollBarImageColor3 = C.faint,
+            CanvasSize = UDim2.fromOffset(0, #CHEST_TYPE_OPTIONS * 29), ZIndex = 51 })
         local function paintTypes()
             local picked = {}
             for _, label in ipairs(CHEST_TYPE_OPTIONS) do if chosen[label] then picked[#picked + 1] = label end end
-            types:Set(picked)
-            CoreFarm.chestTypes, CoreFarm._chestPick = picked, picked
+            types:Set(picked); CoreFarm.chestTypes, CoreFarm._chestPick = picked, picked
             if CoreFarm.openAll or CoreFarm._ownedRun then Autofarm.chestTypes, Autofarm.openChests = picked, true end
-            setText(ui.typesButton, (#picked == #CHEST_TYPE_OPTIONS and "All chest types" or tostring(#picked) .. " types selected") .. "  ▾")
+            setText(ui.typesButton, #picked == #CHEST_TYPE_OPTIONS and "All types" or tostring(#picked) .. " selected")
             for label, row in pairs(rows) do
-                row.TextColor3 = chosen[label] and C.white or C.faint
-                row.BackgroundColor3 = chosen[label] and C.raised or C.background
-                row.Text = (chosen[label] and "✓  " or "○  ") .. label
+                row.Text, row.TextColor3 = (chosen[label] and "[x] " or "[ ] ") .. label, chosen[label] and C.white or C.muted
             end
         end
-        for index, label in ipairs(CHEST_TYPE_OPTIONS) do
-            local row = button("ChestOption" .. index, scroll, 0, (index - 1) * 29, 204, 26, label, C.background)
-            row.ZIndex, row.TextSize, row.TextXAlignment = 52, 11, Enum.TextXAlignment.Left
-            create("UIPadding", "Padding", row, { PaddingLeft = UDim.new(0, 9) })
-            rows[label] = row
+        for i, label in ipairs(CHEST_TYPE_OPTIONS) do
+            local row = button("ChestOption" .. i, scroll, 0, (i - 1) * 29, 252, 26, label)
+            row.ZIndex, row.TextSize = 52, 11; rows[label] = row
             connect(row.Activated, function()
-                local count = 0; for _, enabled in pairs(chosen) do if enabled then count = count + 1 end end
+                local count = 0; for _, value in pairs(chosen) do if value then count = count + 1 end end
                 if chosen[label] and count <= 1 then return end
                 chosen[label] = not chosen[label]; paintTypes()
             end)
         end
         paintTypes()
-        connect(ui.typesButton.Activated, function()
-            ui.popup.Visible = not ui.popup.Visible; ui.scrim.Visible = ui.popup.Visible
-        end)
+        connect(ui.typesButton.Activated, function() ui.popup.Visible = not ui.popup.Visible; ui.scrim.Visible = ui.popup.Visible end)
         connect(ui.scrim.Activated, function() ui.popup.Visible, ui.scrim.Visible = false, false end)
-
         local function fit()
             local camera = Workspace.CurrentCamera
             local viewport = camera and camera.ViewportSize or Vector2.new(1280, 720)
             ui.viewport = viewport
-            ui.scale.Scale = math.min(1, math.max(0.25, math.min((viewport.X - 32) / 820, (viewport.Y - 48) / 584)))
+            ui.scale.Scale = math.min(1, math.max(0.25, math.min((viewport.X - 32) / W, (viewport.Y - 48) / H)))
             main.Position = UDim2.fromScale(0.5, 0.5)
         end
         fit()
@@ -1796,10 +1787,10 @@ function S.createFarmUi()
             if not drag or not screen.Enabled then return end
             if input.UserInputType ~= Enum.UserInputType.MouseMovement and input ~= drag.input then return end
             local viewport, scale = ui.viewport, ui.scale.Scale
-            local x = drag.position.X.Offset + input.Position.X - drag.x
-            local y = drag.position.Y.Offset + input.Position.Y - drag.y
-            x = math.clamp(x, -viewport.X * 0.5 + 410 * scale + 10, viewport.X * 0.5 - 410 * scale - 10)
-            y = math.clamp(y, -viewport.Y * 0.5 + 292 * scale + 10, viewport.Y * 0.5 - 292 * scale - 10)
+            local x = math.clamp(drag.position.X.Offset + input.Position.X - drag.x,
+                -viewport.X * 0.5 + W * 0.5 * scale + 10, viewport.X * 0.5 - W * 0.5 * scale - 10)
+            local y = math.clamp(drag.position.Y.Offset + input.Position.Y - drag.y,
+                -viewport.Y * 0.5 + H * 0.5 * scale + 10, viewport.Y * 0.5 - H * 0.5 * scale - 10)
             main.Position = UDim2.new(0.5, x, 0.5, y)
         end)
         connect(UserInputService.InputEnded, function(input)
@@ -1809,33 +1800,22 @@ function S.createFarmUi()
             if not processed and screen.Enabled and input.KeyCode == Enum.KeyCode.RightControl and not UserInputService:GetFocusedTextBox() then library:Toggle() end
         end)
     end
-
     function ui:refresh()
         if not self.main or library.Unloaded then return end
-        local status = tostring(CoreFarm._statusText or "Starting autofarm")
-        setText(self.status, status)
-        local statusSize = #status > 58 and 14 or 21
-        if self.status.TextSize ~= statusSize then self.status.TextSize = statusSize end
         local need = math.max(1, tonumber(CoreFarm.rescans) or 2)
         local laps = math.min(need, tonumber(CoreFarm.laps) or 0)
-        setText(self.progressText, tostring(laps) .. " / " .. need .. " chest laps complete")
-        setText(self.kept, CoreFarm._keptCount or 0)
-        setText(self.missed, CoreFarm._missedCount or 0)
+        local c = S._collector
+        setText(self.status, S.coreStatusCaption(CoreFarm._statusText))
+        setText(self.progressText, tostring(laps) .. " / " .. tostring(need))
+        setText(self.kept, (CoreFarm._keptCount or 0) + (c.picked or 0))
+        setText(self.missed, (CoreFarm._missedCount or 0) + (c.failed or 0))
+        setText(self.activity, (S._interactionLog or {})[#(S._interactionLog or {})] or "")
+        setText(self.lootStatus, c.status or "Optional pickups between chest visits.")
+        setText(self.footerStatus, c.busy and "Collecting" or S._chestInteraction and "Opening chest" or "")
         local ratio = laps / need
-        if self.cache.ratio ~= ratio then
-            self.cache.ratio = ratio; self.progressFill.Size = UDim2.fromOffset(448 * ratio, 5)
-        end
-        local stage = game.PlaceId == 101906032112547 and 4
-            or (CoreFarm._leaving and (CoreFarm._churchReturning or CoreFarm._churchSaveRequested) and 3)
-            or (CoreFarm._leaving and 2) or 1
-        if CoreFarm._userStop then stage = 0 end
-        if self.cache.stage ~= stage then
-            self.cache.stage = stage
-            for index, step in ipairs(self.steps) do
-                step.box.BackgroundColor3 = index == stage and C.mutedRed or C.raised
-                step.caption.TextColor3 = index == stage and C.white or C.faint
-            end
-        end
+        if self.cache.ratio ~= ratio then self.cache.ratio = ratio; self.progressFill.Size = UDim2.fromOffset(528 * ratio, 2) end
+        local enabled = CoreFarm.enabled == true or CoreFarm._leaving == true
+        if self.cache.enabled ~= enabled then self.cache.enabled = enabled; rf.Flags.dtec_core_open:Set(enabled) end
     end
     return rf, library
 end
@@ -1963,6 +1943,7 @@ function S.unloadKlzeDtec()
     end
     S._unloading = true
     S._unloaded = true
+    if S._collector then S._collector.generation = S._collector.generation + 1; S._collector.pending = nil end
     if type(CoreFarm) == "table" then CoreFarm._finishGen = (CoreFarm._finishGen or 0) + 1 end
 
     pcall(function()
@@ -7065,6 +7046,7 @@ function S.isHardExcluded(item)
     if not item then
         return true
     end
+    if S.coreStorageObject(item) then return true end
     local name = item.Name
     if name and EXCLUDED_ITEMS[name] then
         return true
@@ -7566,15 +7548,17 @@ function S.ensurePickaxe(timeout)
     return equipped ~= nil and S.isPickaxeTool(equipped)
 end
 
-function S.bagPickup(item)
+function S.bagPickup(item, context)
+    if context and not S.coreFinishActive(context) then return false end
     if not item or not item.Parent or not Services.ToolService then
         return false
     end
 
     -- Instant Pickup needs the sack in hand + Range — client "bring" is useless/noise.
-    if not S.waitForItemBagEquipped(0.85) then
+    if not S.waitForItemBagEquipped(0.85, context) then
         return false
     end
+    if context and not S.coreFinishActive(context) then return false end
     local bag = S.getEquippedTool()
     if bag and S.isItemBagTool(bag) then
         S.boostToolRange(bag, math.max(S.getLootMaxRange(), tonumber(Loot.range) or 2000, 250))
@@ -7593,18 +7577,21 @@ function S.bagPickup(item)
 end
 
 -- Fire OK ≠ stored. Confirm bag fill or item left Workspace.Items.
-function S.sackPickupVerified(item)
+function S.sackPickupVerified(item, context)
+    if context and not S.coreFinishActive(context) then return false end
     if not item or not item.Parent then
         return false
     end
     local itemsFolder = Workspace:FindFirstChild("Items")
     local before = S.getBagFillCount()
-    if not S.bagPickup(item) then
+    if not S.bagPickup(item, context) then
         return false
     end
     task.wait(0.04)
-    S.bagPickup(item)
-    task.wait(0.03)
+    if (not context or S.coreFinishActive(context)) and item.Parent then
+        S.bagPickup(item, context)
+        task.wait(0.03)
+    end
 
     local after = S.getBagFillCount()
     if after > before then
@@ -8766,7 +8753,7 @@ function S.setDragTarget(item)
     end)
 end
 
-function S.waitForItemBagEquipped(timeout)
+function S.waitForItemBagEquipped(timeout, context)
     timeout = timeout or 1.5
     if not Services.ToolService then
         return nil
@@ -8774,6 +8761,7 @@ function S.waitForItemBagEquipped(timeout)
 
     local deadline = os.clock() + timeout
     while os.clock() < deadline do
+        if context and not S.coreFinishActive(context) then return nil end
         local equipped = S.getEquippedTool()
         if equipped and S.isItemBagTool(equipped) then
             S.boostToolRange(equipped, math.max(S.getLootMaxRange(), 250))
@@ -8786,6 +8774,7 @@ function S.waitForItemBagEquipped(timeout)
         task.wait(0.05)
     end
 
+    if context and not S.coreFinishActive(context) then return nil end
     local equipped = S.getEquippedTool()
     if equipped and S.isItemBagTool(equipped) then
         S.boostToolRange(equipped, math.max(S.getLootMaxRange(), 250))
@@ -8896,50 +8885,34 @@ function S.findOresInRange(range)
 end
 
 function S.getBagCapacity()
-    local drill = S.getDrill()
-    local sackStorage = drill and (drill:GetAttribute("SackStorage") or 0) or 0
-    local extra = LocalPlayer:GetAttribute("ExtraSackStorage") and 5 or 0
+    local _, shown = S.parseSackQuantity()
+    -- The displayed denominator already includes storage upgrades.
+    if type(shown) == "number" and shown > 0 then return shown end
     local tool = S.getEquippedTool()
-    if not tool or not S.isItemBagTool(tool) then
-        tool = S.findToolInInventory(S.isItemBagTool)
-    end
-    local maxSize = 10
-
-    if tool then
-        local configured = tool:GetAttribute("MaxSize")
-        if typeof(configured) == "number" then
-            maxSize = configured
-        elseif tool.Name == "Large_Sack" then
-            maxSize = 20
-        end
-    end
-
-    local _, uiMax = S.parseSackQuantity()
-    if typeof(uiMax) == "number" and uiMax > 0 then
-        maxSize = math.max(maxSize, uiMax)
-    end
-
-    return maxSize + sackStorage * 2 + extra
+    if not tool or not S.isItemBagTool(tool) then tool = S.findToolInInventory(S.isItemBagTool) end
+    local base = tool and tonumber(tool:GetAttribute("MaxSize")) or 10
+    if tool and tool.Name == "Large_Sack" and not tool:GetAttribute("MaxSize") then base = 20 end
+    local drill = S.getDrill()
+    local storage = drill and (tonumber(drill:GetAttribute("SackStorage")) or 0) or 0
+    return base + storage * 2 + (LocalPlayer:GetAttribute("ExtraSackStorage") and 5 or 0)
 end
 
 function S.parseSackQuantity()
-    local sackUi = LocalPlayer.PlayerGui:FindFirstChild("SackUI", true)
-    if not sackUi then
-        return nil, nil
+    local gui = LocalPlayer:FindFirstChild("PlayerGui")
+    if not gui then return nil, nil end
+    local quantity = S._sackQuantity
+    if not quantity or not quantity.Parent or not quantity:IsDescendantOf(gui) then
+        if S._nextSackUiScan and os.clock() < S._nextSackUiScan then return nil, nil end
+        S._nextSackUiScan = os.clock() + 1
+        local sack = gui:FindFirstChild("SackUI", true)
+        quantity = sack and sack:FindFirstChild("Quantity", true)
+        S._sackQuantity = quantity
     end
-
-    local quantity = sackUi:FindFirstChild("Quantity", true)
-    if not quantity or not quantity:IsA("TextLabel") then
-        return nil, nil
-    end
-
-    local cur, maxv = quantity.Text:match("(%d+)%s*/%s*(%d+)")
-    if cur then
-        return tonumber(cur), tonumber(maxv)
-    end
-
-    local only = quantity.Text:match("^(%d+)")
-    return only and tonumber(only) or nil, nil
+    if not quantity or not quantity:IsA("TextLabel") then return nil, nil end
+    local current, maximum = quantity.Text:match("(%d+)%s*/%s*(%d+)")
+    if current then return tonumber(current), tonumber(maximum) end
+    local count = quantity.Text:match("^(%d+)")
+    return count and tonumber(count) or nil, nil
 end
 
 function S.getBagFillCount()
@@ -11864,88 +11837,66 @@ end
 
 -- Hold E + prompt InputHoldBegin/End. Camera locked on ProximityPrompt.
 function S.holdChestInteract(instance, seconds)
-    if seconds == nil then
-        seconds = S.getChestHoldSeconds(instance)
+    if not instance or not instance.Parent or S._chestInteraction or S._unloaded then return false end
+    if S.coreStorageObject(instance) then return false end
+    local root, character = S.getRoot(), LocalPlayer.Character
+    if not root then return false end
+    local prompts, prompt = S.collectProximityPrompts(instance), nil
+    local best = math.huge
+    for _, candidate in ipairs(prompts) do
+        local pos = S.getPromptWorldPosition(candidate)
+        local distance = pos and (root.Position - pos).Magnitude or math.huge
+        if candidate.Enabled and distance <= (tonumber(candidate.MaxActivationDistance) or 10) and distance < best then
+            best, prompt = distance, candidate
+        end
     end
-    seconds = tonumber(seconds) or 0.1
-    if seconds < 0.1 then
-        seconds = 0.1
+    if not prompt then S.interactionNote("chest", "No enabled prompt within range"); return false end
+    local token = { character = character, root = root, cycle = Autofarm._cycleGen, farm = Autofarm.enabled }
+    S._chestInteraction = token
+    local function active()
+        return not S._unloaded and S._chestInteraction == token and LocalPlayer.Character == character
+            and S.getRoot() == root and (not token.farm or (Autofarm.enabled and token.cycle == Autofarm._cycleGen))
+            and not (type(CoreFarm) == "table" and CoreFarm._leaving)
     end
-
-    local prompts = S.collectProximityPrompts(instance)
-    local lookPos = nil
-    if #prompts > 0 then
-        lookPos = S.getPromptWorldPosition(prompts[1])
-    end
-    lookPos = lookPos or S.getInstancePosition(instance) or S.getItemPosition(instance)
-
-    local promptBackup = S.preparePromptsForHold(prompts)
-    local camBackup = nil
-    if lookPos then
-        S.faceCharacterToward(lookPos)
-        camBackup = S.aimCameraAtWorld(lookPos, nil)
-    end
-
-    local vim
-    pcall(function()
-        vim = game:GetService("VirtualInputManager")
+    local backup, camera, method, complete = S.preparePromptsForHold({ prompt }), nil, nil, false
+    local coresBefore = tonumber(LocalPlayer:GetAttribute("Cores")) or 0
+    local hold = math.max(tonumber(seconds) or 0, tonumber(prompt.HoldDuration) or 0) + 0.35
+    local ok, err = pcall(function()
+        local pos = S.getPromptWorldPosition(prompt)
+        if pos then S.faceCharacterToward(pos); camera = S.aimCameraAtWorld(pos, nil) end
+        task.wait(0.12)
+        if not active() then return end
+        -- One hold mechanism at a time. Combining keyboard, InputHoldBegin and
+        -- zero-duration firesignal/Interact calls was resetting the same hold.
+        if pcall(function() prompt:InputHoldBegin() end) then method = "prompt"
+        elseif S.sendNativeKey(prompt.KeyboardKeyCode or Enum.KeyCode.E, true) then method = "key"
+        elseif typeof(fireproximityprompt) == "function" then
+            method = "executor"
+            if not active() then return end
+            fireproximityprompt(prompt, tonumber(prompt.HoldDuration) or 0)
+        else return end
+        local deadline = os.clock() + hold
+        local nextCheck = 0
+        while active() and os.clock() < deadline do
+            if not prompt.Parent or S.chestOpened(instance, coresBefore) then complete = true; break end
+            if os.clock() >= nextCheck then
+                nextCheck = os.clock() + 0.75
+                if S.playerGuiSaysChestLocked() then S.markChestLocked(instance); return end
+                local target = S.getPromptWorldPosition(prompt)
+                if not target or (root.Position - target).Magnitude > (tonumber(prompt.MaxActivationDistance) or 10) then
+                    S.interactionNote("chest", "Hold cancelled: prompt moved out of range"); return
+                end
+            end
+            task.wait(0.05)
+        end
+        complete = complete or (active() and os.clock() >= deadline)
     end)
-
-    -- Let prompt UI refresh after LOS/camera changes.
-    task.wait(0.08)
-
-    for _, prompt in ipairs(prompts) do
-        pcall(function()
-            prompt:InputHoldBegin()
-        end)
-    end
-    pcall(function()
-        if vim then
-            vim:SendKeyEvent(true, Enum.KeyCode.E, false, game)
-        end
-    end)
-
-    local deadline = os.clock() + seconds
-    while os.clock() < deadline do
-        if S.playerGuiSaysChestLocked() then
-            S.markChestLocked(instance)
-            break
-        end
-        if FollowPlatform.enabled and FollowPlatform.lockedTarget then
-            S.updateFollowPlatform()
-            S.supportCharacterOnFollowPlatform()
-        end
-        -- Keep camera glued to the prompt the whole hold.
-        if #prompts > 0 then
-            lookPos = S.getPromptWorldPosition(prompts[1]) or lookPos
-        end
-        if lookPos then
-            S.faceCharacterToward(lookPos)
-            camBackup = S.aimCameraAtWorld(lookPos, camBackup)
-        end
-        task.wait(0.05)
-    end
-
-    for _, prompt in ipairs(prompts) do
-        pcall(function()
-            prompt:InputHoldEnd()
-        end)
-    end
-    pcall(function()
-        if vim then
-            vim:SendKeyEvent(false, Enum.KeyCode.E, false, game)
-        end
-    end)
-
-    S.restorePromptsAfterHold(promptBackup)
-    S.restoreCameraAim(camBackup)
-
-    if S.playerGuiSaysChestLocked() then
-        S.markChestLocked(instance)
-        return false
-    end
-
-    return true
+    if method == "prompt" then pcall(function() prompt:InputHoldEnd() end)
+    elseif method == "key" then S.sendNativeKey(prompt.KeyboardKeyCode or Enum.KeyCode.E, false) end
+    pcall(S.restorePromptsAfterHold, backup); pcall(S.restoreCameraAim, camera)
+    if S._chestInteraction == token then S._chestInteraction = nil end
+    if not ok then S.interactionNote("chest hold", tostring(err):sub(1, 120)) end
+    return ok and complete
 end
 
 function S.openChestHold(chest, seconds)
@@ -13276,6 +13227,7 @@ function S.isDecorativeOrShopChest(inst)
         return true
     end
 
+    if S.coreStorageObject(inst) then return true end
     local cur = inst
     while cur and cur ~= Workspace do
         local n = string.lower(cur.Name or "")
@@ -13784,27 +13736,17 @@ function S.isChestMarkedLocked(inst)
 end
 
 function S.playerGuiSaysChestLocked()
-    local pg = LocalPlayer:FindFirstChild("PlayerGui")
-    if not pg then
-        return false
-    end
-    for _, gui in ipairs(pg:GetDescendants()) do
-        if gui:IsA("TextLabel") or gui:IsA("TextButton") or gui:IsA("TextBox") then
-            local t = string.lower(gui.Text or "")
-            if t:find("chest is locked", 1, true)
-                or t:find("this chest is locked", 1, true)
-                or (t:find("locked", 1, true) and t:find("chest", 1, true))
-            then
-                if gui.Visible ~= false then
-                    local parent = gui.Parent
-                    if not parent or parent.Visible ~= false then
-                        return true
-                    end
-                end
-            end
+    local cache, now = S.gameGuiCache(), os.clock()
+    if cache.lockAt and now - cache.lockAt < 0.75 then return cache.locked == true end
+    cache.lockAt, cache.locked = now, false
+    for label in pairs(cache.labels) do
+        if not label.Parent then cache.labels[label] = nil
+        elseif S.gameGuiVisible(label) then
+            local text = string.lower(label.Text or "")
+            if text:find("chest", 1, true) and text:find("locked", 1, true) then cache.locked = true; break end
         end
     end
-    return false
+    return cache.locked
 end
 
 function S.isChestPadlocked(inst)
@@ -15598,7 +15540,8 @@ function S.holdAutofarmCruise(reason)
 end
 
 function S.isAutofarmCruiseHeld()
-    return Autofarm.busy == true
+    return (S._collector and S._collector.busy == true) or S._chestInteraction ~= nil
+        or Autofarm.busy == true
         or Autofarm.moving == true
         or Autofarm.miningBusy == true
         or Autofarm._oreHuntMode == true
@@ -16967,6 +16910,7 @@ end
 
 -- Cruise + loot + sell / drop-in-drill. Built into Enable Autofarm.
 function S.runAutofarmCycle()
+    if S._chestInteraction or (S._collector and S._collector.busy) then return end
     if type(CoreFarm) == "table" and CoreFarm._leaving then return end
     if Reap and Reap.sell then
         return
@@ -17427,6 +17371,7 @@ function S.setAutofarm(enabled, opts)
     end)
 
     State.connections.autofarm = RunService.Heartbeat:Connect(function()
+        if S._chestInteraction or (S._collector and S._collector.busy) then return end
         if not Autofarm.enabled or (Reap and Reap.sell) then
             return
         end
@@ -18301,7 +18246,7 @@ function S.findBestDamageCombatTool()
 end
 
 function S.ensureBestDamageTool()
-    if type(CoreFarm) == "table" and CoreFarm._leaving then return false end
+    if S._chestInteraction or (S._collector and S._collector.busy) or (type(CoreFarm) == "table" and CoreFarm._leaving) then return false end
     if not Services.ToolService then
         return false
     end
@@ -18421,7 +18366,7 @@ function S.findBestSwordTool()
 end
 
 function S.ensureSwordTool()
-    if type(CoreFarm) == "table" and CoreFarm._leaving then return false end
+    if S._chestInteraction or (S._collector and S._collector.busy) or (type(CoreFarm) == "table" and CoreFarm._leaving) then return false end
     if not Services.ToolService then
         return false
     end
@@ -18440,7 +18385,7 @@ function S.ensureSwordTool()
 end
 
 function S.combatAttack()
-    if type(CoreFarm) == "table" and CoreFarm._leaving then return 0 end
+    if S._chestInteraction or (S._collector and S._collector.busy) or (type(CoreFarm) == "table" and CoreFarm._leaving) then return 0 end
     if not Services.ToolService or not Services.ToolService.Update then
         return 0
     end
@@ -18896,7 +18841,7 @@ function S.snapUnderMob(root, mob)
 end
 
 function S.dodgeAttackHitboxes(dt)
-    if type(CoreFarm) == "table" and CoreFarm._leaving then return false end
+    if S._chestInteraction or (S._collector and S._collector.busy) or (type(CoreFarm) == "table" and CoreFarm._leaving) then return false end
     local root = S.getRoot()
     if not root then
         return false
@@ -20148,6 +20093,8 @@ function S.findChestForAutofarm()
         if not model or not model.Parent or S.isChestPadlocked(model) then
             return
         end
+        local record = S.chestAttemptRecord(model)
+        if S.coreStorageObject(model) or record.done or record.tries >= 2 then return end
         local label = S.getChestTypeKey(model)
         if label ~= "" and not seenNames[label] and #seenNames < 8 then
             seenNames[#seenNames + 1] = label
@@ -20196,238 +20143,61 @@ function S.findChestForAutofarm()
 end
 
 function S.instantChestOpen(chest)
-    if not chest or not chest.Parent then
-        return false
-    end
-    local prompts = S.collectProximityPrompts(chest)
-    if #prompts == 0 then
-        return false
-    end
-
-    -- Never write HoldDuration. Changing it breaks the chest prompt.
-    local knit = S.getKnit()
-    if knit then
-        pcall(function()
-            local drag = knit.GetController("DragController")
-            if drag then
-                drag.Target = chest
-                if drag.TargetChanged then
-                    drag.TargetChanged:Fire(chest)
-                end
-            end
-        end)
-    end
-
-    local mesh = chest:FindFirstChild("Chest", true)
-    if Services.InteractionService then
-        local function interact(inst)
-            if not inst then
-                return
-            end
-            pcall(function()
-                Services.InteractionService:Interact(inst)
-            end)
-        end
-        interact(chest)
-        interact(mesh)
-        for _, desc in ipairs(chest:GetDescendants()) do
-            if CollectionService:HasTag(desc, "Interactive") then
-                interact(desc)
-            end
-        end
-    end
-
-    local player = Players.LocalPlayer
-    local root = S.getRoot()
-    local fired = false
-    for _, prompt in ipairs(prompts) do
-        local promptPos = S.getPromptWorldPosition(prompt)
-        local maxDist = tonumber(prompt.MaxActivationDistance) or 10
-        if root and promptPos and (root.Position - promptPos).Magnitude > maxDist then
-            continue
-        end
-        fired = true
-        pcall(function()
-            if typeof(firesignal) == "function" then
-                firesignal(prompt.Triggered, player)
-                firesignal(prompt.PromptButtonHoldEnded, player)
-            end
-        end)
-        pcall(function()
-            if typeof(fireproximityprompt) == "function" then
-                fireproximityprompt(prompt, 0)
-            end
-        end)
-    end
-    if not fired then
-        return false
-    end
-
-    task.wait(0.08)
-    if S.playerGuiSaysChestLocked() then
-        S.markChestLocked(chest)
-        return false
-    end
-    return true
+    return S.openChestInstant(chest)
 end
 
 -- Stop under the chest, aim the camera, and hold the prompt for its own duration.
 function S.autofarmVisitChest(chest)
-    if not chest or not Autofarm.enabled or Autofarm.openChests ~= true then
-        return false
-    end
-
+    if not chest or not chest.Parent or not Autofarm.enabled or not Autofarm.openChests
+        or S._chestInteraction or (S._collector and S._collector.busy) then return false end
     chest = S.resolveDungeonChestModel(chest) or chest
-    if S.isChestPadlocked(chest) or not S.chestMatchesAutofarmWhitelist(chest) then
-        return false
-    end
-    if not S.chestHasProximityPrompt(chest) then
-        return false
-    end
-
-    local savedDist = Autofarm.distance or S.syncAutofarmDistanceFromRoot()
+    if S.coreStorageObject(chest) then return false end
+    local record = S.chestAttemptRecord(chest)
+    if record.done or record.tries >= 2 or S.isChestPadlocked(chest) or not S.chestMatchesAutofarmWhitelist(chest) then return false end
     local prompts = S.collectProximityPrompts(chest)
-    local chestPos = S.getInstancePosition(chest) or S.getItemPosition(chest)
     local prompt = prompts[1]
-    local promptPos = (prompt and S.getPromptWorldPosition(prompt)) or chestPos
-    if not chestPos or not promptPos then
-        return false
-    end
-
-    -- Under the chest, but still inside the prompt's own range.
-    local maxDist = prompt and tonumber(prompt.MaxActivationDistance) or 10
-    if not maxDist or maxDist <= 0 then
-        maxDist = 10
-    end
-    local depth = tonumber(Autofarm.chestUnderDepth) or 11
-    local drop = math.min(depth, maxDist * 0.75)
-    if drop < 1.5 then
-        drop = math.min(1.5, maxDist * 0.5)
-    end
-    local standPos = Vector3.new(promptPos.X, promptPos.Y - drop, promptPos.Z)
-
-    S.cancelAutofarmTween()
-    S.ensureAutofarmAntiFall(true)
-    S.lockAutofarmHover(true)
-    S.setAutofarmPlatformStand(true)
-
-    Autofarm._mineHoldPos = standPos
-    Autofarm._mineLookAt = promptPos
-    Autofarm._gatePinY = standPos.Y
+    local pos = prompt and S.getPromptWorldPosition(prompt)
     local root = S.getRoot()
-    if root then
-        root.Anchored = false
-        root.CFrame = CFrame.lookAt(standPos, Vector3.new(promptPos.X, standPos.Y, promptPos.Z))
-        root.AssemblyLinearVelocity = Vector3.zero
-        root.AssemblyAngularVelocity = Vector3.zero
-        S.setAutofarmPlatformStand(true)
-    end
-    task.wait(0.12)
-    root = S.getRoot()
-    if root then
-        local away = (root.Position - promptPos).Magnitude
-        if away > maxDist * 0.9 then
-            root.CFrame = CFrame.lookAt(standPos, Vector3.new(promptPos.X, standPos.Y, promptPos.Z))
-        root.AssemblyLinearVelocity = Vector3.zero
-            root.AssemblyAngularVelocity = Vector3.zero
-        end
-    end
-
-    if Services.ToolService then
-        pcall(function()
-            Services.ToolService:UnequipTool()
-        end)
-    end
-
-    local function chestPromptLive()
-        return chest.Parent and #S.collectProximityPrompts(chest) > 0
-    end
-
-    local function forceChestServerOpen()
-        local prompts = S.collectProximityPrompts(chest)
-        local prompt = prompts[1]
-        local target = (prompt and prompt.Parent) or chest
-        local knit = S.getKnit()
-        if knit then
-            pcall(function()
-                local drag = knit.GetController("DragController")
-                if drag then
-                    drag.Target = target
-                    if drag.TargetChanged then
-                        drag.TargetChanged:Fire(target)
-                    end
-                end
-            end)
-        end
-        local svc = Services.InteractionService
-        if not svc and knit and type(knit.GetService) == "function" then
-            pcall(function()
-                svc = knit.GetService("InteractionService")
-                Services.InteractionService = svc
-            end)
-        end
-        if svc and type(svc.Interact) == "function" then
-            pcall(function()
-                svc:Interact(target)
-            end)
-            if target ~= chest then
-                pcall(function()
-                    svc:Interact(chest)
-                end)
-            end
-        end
-    end
-
-    -- Stay under the chest until the prompt actually dies. A local lid tween
-    -- is not an open: the server only pays cores on InteractionService:Interact.
+    if not prompt or not pos or not root then return false end
+    local character, cycle, savedDist = LocalPlayer.Character, Autofarm._cycleGen, Autofarm.distance
+    local maxDist = math.max(1, tonumber(prompt.MaxActivationDistance) or 10)
+    local drop = math.min(tonumber(Autofarm.chestUnderDepth) or 11, maxDist * 0.45)
+    local stand = pos + Vector3.new(0, -drop, math.min(2, maxDist * 0.2))
+    local before = tonumber(LocalPlayer:GetAttribute("Cores")) or 0
+    record.tries = record.tries + 1
     local opened = false
-    for _ = 1, 3 do
-        if not Autofarm.enabled or not chest.Parent then
-            break
-        end
-        root = S.getRoot()
-        if root then
-            root.CFrame = CFrame.lookAt(standPos, Vector3.new(promptPos.X, standPos.Y, promptPos.Z))
-            root.AssemblyLinearVelocity = Vector3.zero
-            root.AssemblyAngularVelocity = Vector3.zero
-            S.setAutofarmPlatformStand(true)
-        end
-        task.wait(0.2)
-        local coresBefore = tonumber(LocalPlayer:GetAttribute("Cores")) or 0
-        forceChestServerOpen()
-        S.holdChestInteract(chest)
-        forceChestServerOpen()
-        task.wait(0.4)
-        local coresAfter = tonumber(LocalPlayer:GetAttribute("Cores")) or 0
-        if S.playerGuiSaysChestLocked() then
-            S.markChestLocked(chest)
-            opened = false
-            break
-        end
-        if not chestPromptLive() or coresAfter > coresBefore then
-            opened = true
-                    break
-                end
-    end
-
-    local ok = opened
-
-    S.clearMineHoldPin()
-    Autofarm._gatePinY = nil
-    Autofarm.distance = savedDist
-    if Autofarm.enabled then
-        S.setAutofarmPose(savedDist)
+    local ok, err = pcall(function()
+        S.cancelAutofarmTween(); S.ensureAutofarmAntiFall(true); S.lockAutofarmHover(true)
+        Autofarm._mineHoldPos, Autofarm._mineLookAt, Autofarm._gatePinY = stand, pos, stand.Y
+        root.Anchored = false; root.CFrame = CFrame.new(stand)
+        root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
         S.setAutofarmPlatformStand(true)
-        S.ensureAutofarmAntiFall(true)
-        S.lockAutofarmHover(true)
-        if not S.coreChestsOnly() then
-        S.ensureItemBag()
-        end
-    end
-
+        if Services.ToolService then pcall(function() Services.ToolService:UnequipTool() end) end
+        task.wait(0.2)
+        if not Autofarm.enabled or LocalPlayer.Character ~= character or cycle ~= Autofarm._cycleGen then return end
+        local held = S.holdChestInteract(chest)
+        if not held then return end
+        local deadline = os.clock() + 2
+        repeat
+            if not Autofarm.enabled or LocalPlayer.Character ~= character or cycle ~= Autofarm._cycleGen then return end
+            if S.chestOpened(chest, before) then opened = true; break end
+            task.wait(0.1)
+        until os.clock() >= deadline
+    end)
+    record.done = opened
     Autofarm.lockedChestSkip = Autofarm.lockedChestSkip or {}
-    Autofarm.lockedChestSkip[chest] = tick() + (ok and 25 or 4)
-    return ok == true
+    Autofarm.lockedChestSkip[chest] = tick() + (opened and 3600 or 90)
+    -- A cancelled visit must not snap a replacement character or a church flow
+    -- back onto the chest route.
+    if LocalPlayer.Character == character and Autofarm.enabled and cycle == Autofarm._cycleGen
+        and not (type(CoreFarm) == "table" and CoreFarm._leaving) then
+        S.clearMineHoldPin(); Autofarm._gatePinY = nil
+        if savedDist ~= nil then Autofarm.distance = savedDist; S.setAutofarmPose(savedDist) end
+        S.lockAutofarmHover(true)
+    end
+    if not ok then S.interactionNote("chest error", tostring(err):sub(1, 120)) end
+    S.interactionNote("chest", chest.Name .. (opened and " opened and confirmed" or " not confirmed; skipped for 90s"))
+    return opened
 end
 
 -- Instant collect after ore break — verify bag fill / quiet with fast runLootCycle.
@@ -24304,6 +24074,7 @@ local function attach(items)
 
 function S.corePlayerReady()
     if S._unloaded then return false end
+    if S._collector and S._collector.busy then return false end
     if not Services.ToolService or not Services.InteractionService then
         CoreFarm._rootSeenAt = nil
         S.coreSetStatus(not Services.ToolService and "Wait: ToolService" or "Wait: InteractionService")
@@ -24362,6 +24133,7 @@ function S.coreResumeChurch()
 end
 
 function S.coreCycleTick()
+    if not S._unloaded and S.coreProcessSaveRequest() then return end
     if not S._unloaded and S._uiReady then S.coreMenuRefresh() end
     if S._unloaded or not S._uiReady or S._configLoading or CoreFarm._leaving then return end
     if CoreFarm._userStop then S.coreSetStatus("Stopped"); return end
@@ -24474,6 +24246,9 @@ function S.stopCoreChestRun()
     CoreFarm._queuedRun = false
     CoreFarm._nextStartAt = 0
     CoreFarm._rootSeenAt = nil
+    CoreFarm._saveNowRequested = nil
+    if S._collector then S.collectorStop() end
+    CoreFarm._churchReturning, CoreFarm._churchPaused = false, true
     CoreFarm._finishGen = (CoreFarm._finishGen or 0) + 1
     S.coreStopLootWatch()
     S.disconnectAll("coreReturnTeleport")
@@ -24538,6 +24313,7 @@ function S.coreApplyRun()
     CoreFarm._ownedRun = true
     CoreFarm._finishGen = (CoreFarm._finishGen or 0) + 1
     CoreFarm._keptCount, CoreFarm._missedCount = 0, 0
+    S._collector.picked, S._collector.failed = 0, 0
     CoreFarm._startStage = "loot tracker"
     S.coreStartLootWatch()
     if S.isScrapFarmMode() then S.clearScrapFarmState(false) end
@@ -24578,6 +24354,7 @@ function S.coreApplyRun()
 end
 
 function S.coreUnstickRun()
+    if S._chestInteraction or (S._collector and S._collector.busy) then return end
     if not (CoreFarm.openAll and CoreFarm._ownedRun) or CoreFarm._leaving or CoreFarm._applying then
         return
     end
@@ -24659,8 +24436,618 @@ end
 -- Core finish runs once, after the last chest lap. No per-frame world scans.
 
 function S.coreFinishActive(gen)
+    if type(gen) == "table" then return S.collectorActive(gen) end
     return not S._unloading and not S._unloaded and not CoreFarm._userStop
         and CoreFarm._leaving == true and gen == CoreFarm._finishGen
+end
+
+function S.collectorStatus(text)
+    local c = S._collector
+    text = tostring(text)
+    if c.status == text then return end
+    c.status = text
+    S.interactionNote("loot", text)
+    S.coreMenuRefresh()
+end
+
+function S.collectorAny()
+    for _, enabled in pairs(S._collector.groups) do if enabled then return true end end
+    return false
+end
+
+function S.collectorSyncFlags()
+    local c, changed = S._collector, false
+    for group, enabled in pairs(c.groups) do
+        local flags = Rayfield and Rayfield.Flags
+        if flags and flags["dtec_collect_" .. group] then
+            local value = S.coreToggleOn("dtec_collect_" .. group)
+            if value ~= enabled then c.groups[group], changed = value, true end
+        end
+    end
+    local flags = Rayfield and Rayfield.Flags or {}
+    for _, key in ipairs({ "equip", "restore", "legendaryFirst", "autoChurch", "freeSlots" }) do
+        if flags["dtec_collect_" .. key] then c[key] = S.coreToggleOn("dtec_collect_" .. key) end
+    end
+    for _, key in ipairs({ "range", "minValue", "batch" }) do
+        local flag = flags["dtec_collect_" .. key]
+        local value = flag and ((flag._obsidian and flag._obsidian.Value) or flag.CurrentValue)
+        if tonumber(value) then c[key] = tonumber(value) end
+    end
+    if changed and not S.collectorAny() then c.generation = c.generation + 1 end
+    return changed
+end
+
+function S.collectorDescribe(item)
+    if not item or not item.Parent or S.isHardExcluded(item) then return nil end
+    local c, name = S._collector, S.normalizeGearToken(S.coreChurchText(item))
+    local category = ""
+    for _, key in ipairs({ "Category", "Class", "DisplayCategory", "ItemType", "Type" }) do
+        category = category .. " " .. tostring(item:GetAttribute(key) or "")
+    end
+    category = S.normalizeGearToken(category)
+    local kind, tier = S.coreKeepKind(item)
+    local group, mode = nil, "Tool"
+    if kind == "Shard" then group = "shards"
+    elseif kind then group = tier >= 110 and "mythics" or "gear"
+    elseif name:find("revivekit", 1, true) or category:find("revivekit", 1, true) then group, kind = "revive", "Tool"
+    elseif name:find("medkit", 1, true) or name:find("bandage", 1, true)
+        or category:find("medkit", 1, true) then group, kind = "medkits", "Tool"
+    elseif name:find("ammo", 1, true) or category:find("ammo", 1, true) then group, mode = "ammo", "Sack"
+    elseif S.isFuelItem(item) then group, mode = "fuel", "Sack"
+    elseif category:find("ore", 1, true) or category == "bar" or name:find("goldbar", 1, true)
+        or name:find("ironbar", 1, true) or name:find("steelbar", 1, true) then group, mode = "ores", "Sack"
+    else
+        if S.isArmorWorldItem(item) then group, kind = "valuableGear", "Armor"
+        elseif item:IsA("Tool") or S.isPickaxeWorldItem(item) or S.isSwordWorldItem(item)
+            or category:find("weapon", 1, true) or category == "tool" then group, kind = "valuableGear", "Tool"
+        else group, mode = "valuables", "Sack" end
+    end
+    local pos = S.getItemPosition(item)
+    if not pos then return nil end
+    local rarity = S.normalizeGearToken(tostring(item:GetAttribute("Rarity") or "") .. name)
+    return { item = item, name = item.Name, keys = S.coreItemKeys(item), pos = pos,
+        group = group, mode = mode, kind = kind or "Tool", tier = tier or 0,
+        priority = rarity:find("legendary", 1, true) and 100 or rarity:find("rare", 1, true) and 50 or 0,
+        value = tonumber(item:GetAttribute("Value")) or 0, attempts = 0 }
+end
+
+function S.collectorRecord(item)
+    local c = S._collector
+    item = S.resolveWorldItem(item)
+    if not item or c.entries[item] or S.isDiscardedLoot(item) or S.coreStorageObject(item) then return end
+    local entry = S.collectorDescribe(item)
+    if entry then c.entries[item] = entry end
+end
+
+function S.collectorRescan()
+    local c, n = S._collector, 0
+    c.entries = {}
+    S.forEachWorldLootItem(function(item)
+        S.collectorRecord(item)
+        n = n + 1
+        if n % 64 == 0 then task.wait() end
+    end)
+end
+
+function S.collectorStopWatch()
+    for _, key in ipairs({ "collectorWorldAdded", "collectorItemAdded", "collectorItemRemoved", "collectorLootTagged" }) do S.disconnectAll(key) end
+    S._collector.watching = false
+end
+
+function S.collectorStartWatch()
+    local c = S._collector
+    if c.watching then return false end
+    c.watching = true
+    local function attach(items)
+        S.disconnectAll("collectorItemAdded"); S.disconnectAll("collectorItemRemoved")
+        State.connections.collectorItemAdded = items.ChildAdded:Connect(function(item)
+            task.defer(function() if c.watching and not S._unloaded then S.collectorRecord(item) end end)
+        end)
+        State.connections.collectorItemRemoved = items.ChildRemoved:Connect(function(item) c.entries[item] = nil end)
+    end
+    local items = Workspace:FindFirstChild("Items")
+    if items then attach(items) end
+    State.connections.collectorWorldAdded = Workspace.ChildAdded:Connect(function(folder)
+        if folder.Name == "Items" and c.watching then attach(folder); S.collectorRescan() end
+    end)
+    State.connections.collectorLootTagged = CollectionService:GetInstanceAddedSignal("DungeonLootHighlightTarget"):Connect(S.collectorRecord)
+    S.collectorRescan()
+    return true
+end
+
+function S.collectorActive(context)
+    local c = S._collector
+    if S._unloaded or S._unloading or not c.busy or context.generation ~= c.generation then return false end
+    if context.character ~= LocalPlayer.Character or context.root ~= S.getRoot() then return false end
+    if not context.manual and not S.collectorAny() then return false end
+    if CoreFarm._teleportPending or (S._churchClickAt and os.clock() - S._churchClickAt < 3) then return false end
+    if context.finishGen then
+        return CoreFarm._leaving and not CoreFarm._userStop and CoreFarm._finishGen == context.finishGen
+    end
+    if context.farm then
+        return Autofarm.enabled and not CoreFarm._leaving and context.farmGen == CoreFarm._finishGen
+            and context.cycle == Autofarm._cycleGen
+    end
+    return not CoreFarm._ownedRun and not CoreFarm._leaving and not Autofarm.enabled
+end
+
+function S.collectorCandidates(groups)
+    local c, list, root = S._collector, {}, S.getRoot()
+    if not root then return list end
+    local bagFull = S.isBagFull()
+    for item, entry in pairs(c.entries) do
+        local world = S.resolveWorldItem(item)
+        if not item.Parent or not world then c.entries[item] = nil
+        elseif groups[entry.group] and entry.attempts < 2 and (entry.mode ~= "Sack" or not bagFull) and not S.isDiscardedLoot(item) then
+            local pos = S.getItemPosition(item) or entry.pos
+            local distance = (pos - root.Position).Magnitude
+            if distance <= c.range and (not S.isItemInTruckZone or not S.isItemInTruckZone(item)) then
+                entry.pos, entry.distance = pos, distance
+                if (entry.group ~= "valuableGear" and entry.group ~= "valuables") or entry.value >= c.minValue then list[#list + 1] = entry end
+            end
+        end
+    end
+    table.sort(list, function(a, b)
+        if a.group ~= b.group then
+            if a.group == "shards" then return true end
+            if b.group == "shards" then return false end
+        end
+        if c.legendaryFirst and a.priority ~= b.priority then return a.priority > b.priority end
+        return a.distance < b.distance
+    end)
+    return list
+end
+
+function S.collectorPass(context, options)
+    local c = S._collector
+    local groups = options.groups or c.groups
+    local list = S.collectorCandidates(groups)
+    local limit = options.finishGen and #list or options.all and #list or c.batch
+    local picked, failed = 0, 0
+    for i, entry in ipairs(list) do
+        if i > limit or not S.collectorActive(context) then break end
+        if (options.groups or c.groups)[entry.group] and (entry.mode ~= "Sack" or not S.isBagFull()) then
+        entry.attempts = entry.attempts + 1
+        local ok, got
+        if entry.mode == "Sack" then
+            if S.isBagFull() then S.collectorStatus("Sack full · hotbar items still enabled")
+            else
+                ok, got = pcall(function()
+                    if not S.coreStandNear(entry.pos, context) then return false end
+                    return S.sackPickupVerified(entry.item, context)
+                end)
+            end
+        else ok, got = pcall(S.coreCollectKeptItem, entry, context) end
+        if ok and got then
+            picked = picked + 1
+            c.entries[entry.item] = nil
+        elseif entry.mode ~= "Sack" or not S.isBagFull() then failed = failed + 1 end
+        task.wait(0.18)
+        end
+    end
+    if c.equip and not options.finishGen and picked > 0 and S.collectorActive(context) then
+        S.coreEquipKeptTools(context)
+        local best = S.findBestPickaxe()
+        if best and S.collectorActive(context) then S.callEquipTool(best) end
+    end
+    c.picked, c.failed = c.picked + picked, c.failed + failed
+    S.collectorStatus("Picked " .. picked .. " · failed " .. failed .. " · total " .. c.picked)
+end
+
+function S.collectorBegin(options)
+    options = options or {}
+    local c = S._collector
+    if S._unloaded or c.busy or S._chestInteraction then return false end
+    if game.PlaceId ~= KLZE.placeId then S.collectorStatus("Use the collector in a match"); return false end
+    if not options.finishGen then
+        if CoreFarm._leaving then return false end
+        if CoreFarm._ownedRun or Autofarm.enabled then
+            if not options.farm or not Autofarm.enabled or Autofarm.busy or Autofarm._cycleRunning or Autofarm.miningBusy then return false end
+        end
+    end
+    if not Services.InteractionService or not Services.ToolService then
+        S.collectorStatus("Wait: game services")
+        if S.connectServicesAsync then S.connectServicesAsync() end
+        return false
+    end
+    local root = S.getRoot()
+    if not root then S.collectorStatus("Wait: living character"); return false end
+    local context = { generation = c.generation, finishGen = options.finishGen, manual = options.groups ~= nil or options.all == true,
+        character = LocalPlayer.Character, root = root, farm = options.farm == true, farmGen = CoreFarm._finishGen, cycle = Autofarm._cycleGen }
+    c.busy, c.context = true, context
+    local origin, pin, pinY, distance = root.CFrame, Autofarm._mineHoldPos, Autofarm._gatePinY, Autofarm.distance
+    if context.farm then
+        Autofarm._collectorOwner = context
+        Autofarm.busy, Autofarm._holdReason, Autofarm._busySince = true, "collect", tick()
+        S.cancelAutofarmTween()
+    end
+    task.spawn(function()
+        local ok, err = pcall(function()
+            if not S.collectorActive(context) then return end
+            local scanned = S.collectorStartWatch()
+            if options.rescan and not scanned then S.collectorRescan() end
+            if not S.collectorActive(context) then return end
+            S.collectorPass(context, options)
+        end)
+        pcall(S.clearDragTarget)
+        local same = not S._unloaded and LocalPlayer.Character == context.character and S.getRoot() == root
+        if context.farm and same and Autofarm.enabled and not CoreFarm._leaving and context.cycle == Autofarm._cycleGen then
+            root.CFrame = origin; root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
+            Autofarm._mineHoldPos, Autofarm._gatePinY, Autofarm.distance = pin, pinY, distance
+            Autofarm.busy, Autofarm._busySince, Autofarm._holdReason = false, nil, nil
+        elseif not context.farm and not options.finishGen and c.restore and same and not CoreFarm._ownedRun
+            and not CoreFarm._leaving and not Autofarm.enabled and not CoreFarm._teleportPending
+            and not (S._churchClickAt and os.clock() - S._churchClickAt < 3) then
+            root.CFrame = origin; root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
+        end
+        if Autofarm._collectorOwner == context then
+            Autofarm._collectorOwner = nil
+            if Autofarm._holdReason == "collect" then
+                Autofarm.busy, Autofarm._busySince, Autofarm._holdReason = false, nil, nil
+                if not same then Autofarm._mineHoldPos, Autofarm._gatePinY = nil, nil end
+            end
+        end
+        if c.context == context then c.busy, c.context = false, nil end
+        if not ok and not S._unloaded then
+            S.interactionNote("collector", tostring(err):sub(1, 160))
+            S.collectorStatus("Pickup error: " .. tostring(err):sub(1, 90))
+        end
+        c.nextPassAt = os.clock() + 1
+    end)
+    return true
+end
+
+function S.collectorFinishExtras(gen)
+    if not S.coreFinishActive(gen) then return end
+    while S._collector.busy and S.coreFinishActive(gen) do task.wait(0.1) end
+    if not S.coreFinishActive(gen) then return end
+    local pending, options = S._collector.pending, { all = true, rescan = true }
+    if not pending and not S.collectorAny() then return end
+    if pending then
+        options.groups = {}
+        for group, enabled in pairs(S._collector.groups) do options.groups[group] = enabled end
+        for group, enabled in pairs(pending.groups or {}) do if enabled then options.groups[group] = true end end
+    end
+    options.finishGen, options.farm = gen, false
+    if S.collectorBegin(options) then
+        if S._collector.pending == pending then S._collector.pending = nil end
+        while S._collector.busy and S.coreFinishActive(gen) do task.wait(0.1) end
+    end
+end
+
+function S.collectorStop()
+    local c = S._collector
+    c.generation, c.pending = c.generation + 1, nil
+    for group in pairs(c.groups) do c.groups[group] = false; S.trySetRayfieldFlag("dtec_collect_" .. group, false) end
+    S.collectorStopWatch()
+    S.collectorStatus("Stopped")
+end
+
+function S.collectorPollChurch()
+    local c = S._collector
+    local gui, buttons = S.coreChurchConfirmButtons()
+    c.gui, c.buttons = gui, buttons
+    local button = S.coreFindSaveButton(buttons)
+    if not button then return false end
+    if c.autoChurch and not c.busy and not CoreFarm._ownedRun and not CoreFarm._leaving
+        and not CoreFarm._churchReturning and not CoreFarm._churchPaused then S.coreFireChurchButton(button) end
+    return true
+end
+
+function S.collectorTick()
+    if S._unloaded or not S._uiReady or S._configLoading then return end
+    local c = S._collector
+    if S.collectorSyncFlags() then S.coreSaveQueue() end
+    if S.collectorPollChurch() or CoreFarm._teleportPending or CoreFarm._leaving then return end
+    if c.busy or S._chestInteraction or os.clock() < (c.nextPassAt or 0) then return end
+    if game.PlaceId ~= KLZE.placeId then return end
+    local farm = CoreFarm._ownedRun or Autofarm.enabled
+    if farm and (not Autofarm.enabled or Autofarm.busy or Autofarm._cycleRunning or Autofarm.miningBusy) then
+        if c.pending then S.collectorStatus("Requested · waiting for the current chest/visit") end
+        return
+    end
+    local options = c.pending
+    if not options and not S.collectorAny() then
+        if c.watching then S.collectorStopWatch() end
+        return
+    end
+    if not options then
+        S.collectorStartWatch()
+        if #S.collectorCandidates(c.groups) == 0 then S.collectorStatus("Watching · no selected loot in range"); return end
+        options = {}
+    end
+    options.farm = farm and true or false
+    if S.collectorBegin(options) and c.pending == options then c.pending = nil end
+end
+
+function S.chestOpened(chest, coresBefore)
+    if (tonumber(LocalPlayer:GetAttribute("Cores")) or 0) > coresBefore then return true end
+    if not chest.Parent then return true end
+    for _, name in ipairs({ "Opened", "IsOpened", "Looted" }) do if chest:GetAttribute(name) == true then return true end end
+    -- Prompt visibility can change during a local lid animation. It does not prove a server reward.
+    return false
+end
+
+function S.chestAttemptRecord(chest)
+    S._chestAttempts = S._chestAttempts or setmetatable({}, { __mode = "k" })
+    local generation = type(CoreFarm) == "table" and CoreFarm._finishGen or 0
+    local record = S._chestAttempts[chest]
+    if not record or record.generation ~= generation then
+        record = { generation = generation, tries = 0, done = false }; S._chestAttempts[chest] = record
+    end
+    return record
+end
+
+function S.hotbarTools()
+    local tools, seen = {}, {}
+    for _, container in ipairs({ LocalPlayer.Character, LocalPlayer:FindFirstChildOfClass("Backpack") }) do
+        if container then
+            for _, tool in ipairs(container:GetChildren()) do
+                if tool:IsA("Tool") and not seen[tool] then tools[#tools + 1] = tool; seen[tool] = true end
+            end
+        end
+    end
+    return tools
+end
+
+function S.hotbarLimit()
+    for _, container in ipairs({ LocalPlayer, LocalPlayer:FindFirstChildOfClass("Backpack"), LocalPlayer.Character }) do
+        if container then
+            for _, key in ipairs({ "MaxTools", "MaxHotbarSlots", "HotbarSize", "ToolCapacity" }) do
+                local value = tonumber(container:GetAttribute(key))
+                if value and value >= 1 and value <= 100 then return math.floor(value) end
+            end
+        end
+    end
+    -- A starter sack holds 10 objects. That number is not a hotbar limit.
+    -- If the game does not publish a tool limit, wait for its actual full hint.
+    return math.huge
+end
+
+function S.hotbarFullHint()
+    local cache = S.gameGuiCache()
+    for label in pairs(cache.labels) do
+        if label.Parent and S.gameGuiVisible(label) then
+            local text = string.lower(label.Text or "")
+            if ((text:find("hotbar", 1, true) or text:find("inventory", 1, true) or text:find("backpack", 1, true))
+                and text:find("full", 1, true)) or text:find("too many tools", 1, true)
+                or (text:find("can only carry", 1, true) and text:find("tool", 1, true)) then return true end
+        end
+    end
+    return false
+end
+
+function S.hotbarProtected(tool)
+    local token = S.normalizeGearToken(S.armorLabel(tool))
+    if S.coreKeepKind(tool) or (S.isItemBagTool and S.isItemBagTool(tool))
+        or token:find("itembag", 1, true) or token:find("revive", 1, true)
+        or token:find("medkit", 1, true) or token:find("bandage", 1, true)
+        or tool:GetAttribute("QuestItem") or tool:GetAttribute("NoDrop") then return true end
+    return false
+end
+
+function S.hotbarToolGroup(tool)
+    if S.isPickaxeWorldItem(tool) then return "Pickaxe" end
+    if S.isSwordWorldItem(tool) then return "Sword" end
+    local token = S.normalizeGearToken(S.coreChurchText(tool))
+    if token:find("rifle", 1, true) or token:find("shotgun", 1, true) or token:find("revolver", 1, true)
+        or tool:GetAttribute("Ammo") ~= nil then return "Weapon" end
+end
+
+function S.hotbarToolScore(tool)
+    local score = S.getWorldGearScore(tool)
+    if score and score >= 0 then return score end
+    return (tonumber(tool:GetAttribute("Value")) or 0) + (tonumber(tool:GetAttribute("Damage")) or 0)
+end
+
+function S.hotbarMayReplace(tool, incoming)
+    if not incoming or (S.isItemBagTool and S.isItemBagTool(tool)) or tool:GetAttribute("QuestItem") or tool:GetAttribute("NoDrop") then return false end
+    local oldKind, oldTier = S.coreKeepKind(tool)
+    local newKind, newTier = S.coreKeepKind(incoming)
+    local group = S.hotbarToolGroup(tool)
+    return oldKind == "Tool" and newKind == "Tool" and oldTier < 110 and newTier > oldTier
+        and group ~= nil and group == S.hotbarToolGroup(incoming)
+end
+
+function S.hotbarDropCandidate(incoming)
+    local tools, best, bestScore = S.hotbarTools(), nil, math.huge
+    local incomingGroup = S.hotbarToolGroup(incoming)
+    local incomingScore = S.hotbarToolScore(incoming)
+    local pickaxes = 0
+    for _, tool in ipairs(tools) do if S.isPickaxeWorldItem(tool) then pickaxes = pickaxes + 1 end end
+    for _, tool in ipairs(tools) do
+        local group, score = S.hotbarToolGroup(tool), S.hotbarToolScore(tool)
+        local canDrop = true
+        pcall(function() canDrop = tool.CanBeDropped ~= false end)
+        if canDrop and group and (not S.hotbarProtected(tool) or S.hotbarMayReplace(tool, incoming)) then
+            local isUpgrade = incomingGroup == group and (incomingScore > score or S.hotbarMayReplace(tool, incoming))
+            local valuable = S.coreKeepKind(incoming) ~= nil
+            local sparePickaxe = group ~= "Pickaxe" or pickaxes > 1 or (incomingGroup == "Pickaxe" and isUpgrade)
+            if sparePickaxe and (isUpgrade or valuable) and score < bestScore then best, bestScore = tool, score end
+        end
+    end
+    return best
+end
+
+function S.hotbarDropTool(tool, context, incoming)
+    if not tool or (S.hotbarProtected(tool) and not S.hotbarMayReplace(tool, incoming))
+        or not S.coreFinishActive(context) or not Services.ToolService then return false end
+    local character, before = LocalPlayer.Character, #S.hotbarTools()
+    local canDrop = true
+    pcall(function() canDrop = tool.CanBeDropped ~= false end)
+    if not canDrop then return false end
+    local ok, promise = pcall(function() return Services.ToolService:EquipTool(tool) end)
+    if not ok then return false end
+    S.coreFinishAwait(promise, 1, context)
+    local deadline = os.clock() + 1
+    while S.coreFinishActive(context) and tool.Parent ~= character and os.clock() < deadline do task.wait(0.05) end
+    -- Drop through native input. Destroying/reparenting a client copy does not
+    -- free the server's inventory and must never be reported as success.
+    if not S.coreFinishActive(context) or LocalPlayer.Character ~= character or tool.Parent ~= character then return false end
+    local focused
+    pcall(function() focused = UserInputService:GetFocusedTextBox() end)
+    if focused then return false end
+    local sent = S.sendNativeKey(Enum.KeyCode.Backspace, true)
+    if sent then task.wait(0.06) end
+    S.sendNativeKey(Enum.KeyCode.Backspace, false)
+    deadline = os.clock() + 1.2
+    while S.coreFinishActive(context) and os.clock() < deadline do
+        if tool.Parent ~= character and not tool:IsDescendantOf(LocalPlayer) and #S.hotbarTools() < before then
+            S._discardedLoot = S._discardedLoot or {}
+            S._discardedLoot[S.normalizeGearToken(tool.Name)] = { at = os.clock(), score = S.hotbarToolScore(tool) }
+            S.interactionNote("hotbar", "Dropped " .. tool.Name .. "; slot confirmed free")
+            return true
+        end
+        task.wait(0.1)
+    end
+    S.interactionNote("hotbar", "Game did not confirm dropping " .. tool.Name)
+    return false
+end
+
+function S.isDiscardedLoot(item)
+    local discarded = S._discardedLoot and S._discardedLoot[S.normalizeGearToken(item.Name)]
+    if not discarded then return false end
+    if os.clock() - discarded.at > 180 then S._discardedLoot[S.normalizeGearToken(item.Name)] = nil; return false end
+    return S.hotbarToolScore(item) <= discarded.score
+end
+
+function S.hotbarMakeRoom(entry, context, force)
+    if entry.kind == "Armor" then return true end
+    if not force and #S.hotbarTools() < S.hotbarLimit() then return true end
+    local candidate = S.hotbarDropCandidate(entry.item)
+    if candidate and S.hotbarDropTool(candidate, context, entry.item) then return true end
+    S.interactionNote("hotbar", "No confirmed free slot for " .. entry.name)
+    S.coreSetStatus("Hotbar: no free slot · keeping protected gear")
+    if S.collectorStatus then S.collectorStatus("Hotbar full · no weaker droppable tool available") end
+    return false
+end
+
+function S.collectorRequest(groups)
+    if CoreFarm._leaving or CoreFarm._teleportPending then S.notify("Loot", "Collection is paused during the church return.", 3); return false end
+    local selected, any = {}, false
+    for group, enabled in pairs(groups or S._collector.groups) do selected[group] = enabled == true; any = any or enabled == true end
+    if not any then S.collectorStatus("Choose an item filter first"); return false end
+    S._collector.pending = { groups = selected, all = true, rescan = true }
+    S.collectorStatus("Pickup requested · waiting for a safe pause")
+    S.collectorTick()
+    return true
+end
+
+function S.gameGuiCache()
+    local gui = LocalPlayer:FindFirstChild("PlayerGui")
+    local cache = S._gameGui
+    if cache and cache.gui == gui then return cache end
+    S.disconnectAll("gameGuiAdded"); S.disconnectAll("gameGuiRemoved")
+    cache = { gui = gui, buttons = {}, labels = {} }; S._gameGui = cache
+    if not gui then return cache end
+    local function record(inst)
+        if inst:IsA("GuiButton") then cache.buttons[inst] = true end
+        if inst:IsA("TextLabel") or inst:IsA("TextButton") or inst:IsA("TextBox") then cache.labels[inst] = true end
+    end
+    State.connections.gameGuiAdded = gui.DescendantAdded:Connect(record)
+    State.connections.gameGuiRemoved = gui.DescendantRemoving:Connect(function(inst)
+        cache.buttons[inst], cache.labels[inst] = nil, nil
+    end)
+    local n = 0
+    for _, inst in ipairs(gui:GetDescendants()) do
+        record(inst); n = n + 1
+        if n % 128 == 0 then task.wait() end
+    end
+    return cache
+end
+
+function S.coreStorageObject(inst)
+    local cur = inst
+    for _ = 1, 14 do
+        if not cur or cur == Workspace then break end
+        local name = string.lower(cur.Name or "")
+        local token = S.normalizeGearToken(name)
+        if token:find("loadout", 1, true) or token:find("playercrate", 1, true)
+            or token:find("personalcrate", 1, true) or token:find("equipmentcrate", 1, true)
+            or token:find("storagecrate", 1, true) or token:find("spawncrate", 1, true) then return true end
+        if token:find("crate", 1, true) then
+            if name:find("'s", 1, true) or name:find("’s", 1, true) then return true end
+            for _, key in ipairs({ "Owner", "OwnerId", "OwnerUserId", "PlayerUserId", "PlayerName" }) do
+                if cur:GetAttribute(key) ~= nil then return true end
+            end
+        end
+        cur = cur.Parent
+    end
+    return false
+end
+
+function S.coreChurchContext(inst)
+    local cur, church = inst, nil
+    for _ = 1, 16 do
+        if not cur or cur == Workspace then break end
+        local token = S.normalizeGearToken(cur.Name)
+        -- A player's loadout crate is not a church, even if it offers Save Gear
+        -- or sits below a Church model in the world hierarchy.
+        if token:find("crate", 1, true) or token:find("loadout", 1, true)
+            or token:find("storage", 1, true) or token:find("shop", 1, true) then return nil end
+        if (cur:IsA("Model") or cur:IsA("BasePart") or cur:IsA("Folder"))
+            and (token:find("church", 1, true) or token:find("chapel", 1, true)) then church = church or cur end
+        cur = cur.Parent
+    end
+    return church
+end
+
+function S.coreSaveReturnNow()
+    if S._unloaded or CoreFarm._teleportPending then return false end
+    if game.PlaceId ~= KLZE.placeId then S.notify("Return", "Join a match first.", 3); return false end
+    if CoreFarm._leaving then return S.coreRetryChurchReturn() end
+    CoreFarm._saveNowRequested = true
+    S.coreSetStatus("Return queued")
+    return true
+end
+
+function S.coreProcessSaveRequest()
+    if not CoreFarm._saveNowRequested then return false end
+    if S._unloaded or game.PlaceId ~= KLZE.placeId then CoreFarm._saveNowRequested = nil; return false end
+    if S._chestInteraction or (S._collector and S._collector.busy) then return true end
+    CoreFarm._saveNowRequested = nil
+    if CoreFarm._leaving or CoreFarm._teleportPending then return true end
+    CoreFarm._userStop, CoreFarm._leaving, CoreFarm.openAll, CoreFarm._ownedRun = false, true, false, false
+    CoreFarm._runStarted = false
+    CoreFarm._finishGen = (CoreFarm._finishGen or 0) + 1
+    local gen, before = CoreFarm._finishGen, CoreFarm._coresBefore
+    S.disconnectAll("autofarmGlide"); S.disconnectAll("autofarm")
+    task.spawn(function()
+        local ok, err = pcall(S.coreFinishRun, before, gen)
+        if not ok and S.coreFinishActive(gen) then
+            S.coreSetStatus("Return paused")
+            S.interactionNote("return", tostring(err))
+        end
+    end)
+    return true
+end
+
+function S.coreSetOption(key, value)
+    local c = S._collector
+    if key == "freeSlots" or key == "equip" or key == "legendaryFirst" then c[key] = value == true end
+end
+
+function S.coreRetryMissedChests()
+    if S._unloaded or S._chestInteraction or CoreFarm._leaving then return false end
+    local reset = 0
+    for chest, record in pairs(S._chestAttempts or {}) do
+        if chest.Parent and not record.done and record.tries > 0 then
+            record.tries = 0
+            if Autofarm.lockedChestSkip then Autofarm.lockedChestSkip[chest] = nil end
+            reset = reset + 1
+        end
+    end
+    S.interactionNote("chests", tostring(reset) .. " missed chest attempts reset")
+    return reset
+end
+
+function S.coreStatusCaption(value)
+    value = tostring(value or "Starting")
+    if value:find("opening save dialog", 1, true) then return "Opening church" end
+    if value:find("teleport accepted", 1, true) then return "Returning to lobby" end
+    if value:find("altar not loaded", 1, true) then return "Church altar not loaded" end
+    if value:find("Church: Teleport", 1, true) then return "Confirming return" end
+    return value
 end
 
 function S.coreKeepKind(item)
@@ -24669,18 +25056,17 @@ function S.coreKeepKind(item)
         .. " " .. tostring(item:GetAttribute("ItemId") or "") .. " " .. tostring(item:GetAttribute("ArmorName") or ""))
     if name:find("shard", 1, true) then return "Shard", 0 end
     local tier = 0
-    if name:find("phoenix", 1, true) then tier = 90 end
-    if name:find("king", 1, true) and not name:find("goblin", 1, true) then tier = 100 end
+    local rarity = S.normalizeGearToken(item:GetAttribute("Rarity"))
+    if name:find("blackhole", 1, true) or name:find("mythic", 1, true) or rarity:find("mythic", 1, true) then tier = 110 end
+    if name:find("phoenix", 1, true) then tier = math.max(tier, 90) end
+    if name:find("king", 1, true) and not name:find("goblin", 1, true) then tier = math.max(tier, 100) end
     if tier == 0 then return nil end
-    -- Classify armor first: its name may also contain a material/tool token.
     if S.isArmorWorldItem(item) then return "Armor", tier end
     local category = S.itemCategoryKey(item)
     if item:IsA("Tool") or S.isPickaxeWorldItem(item) or S.isSwordWorldItem(item)
         or category:find("weapon", 1, true) or category == "tool"
         or name:find("rifle", 1, true) or name:find("shotgun", 1, true)
-        or name:find("revolver", 1, true) then
-        return "Tool", tier
-    end
+        or name:find("revolver", 1, true) or name:find("blackhole", 1, true) then return "Tool", tier end
     return nil
 end
 
@@ -24721,7 +25107,7 @@ function S.coreRecordLoot(item)
     item = S.resolveWorldItem(item)
     if not item or not item.Parent or CoreFarm._lootSeen[item] or S.isHardExcluded(item) then return end
     local kind, tier = S.coreKeepKind(item)
-    if not kind then return end
+    if not kind or S.isDiscardedLoot(item) or S.coreStorageObject(item) then return end
     local pos = S.getItemPosition(item)
     if pos then
         CoreFarm._lootSeen[item] = { item = item, name = item.Name, keys = S.coreItemKeys(item),
@@ -24729,36 +25115,20 @@ function S.coreRecordLoot(item)
     end
 end
 
-function S.coreSavePromptScore(prompt, scope)
-    if not prompt or not prompt:IsA("ProximityPrompt") or not prompt.Parent or not prompt.Enabled then return 0 end
+function S.coreSavePromptScore(prompt)
+    if not prompt or not prompt:IsA("ProximityPrompt") or not prompt.Parent or not prompt.Enabled
+        or S.coreStorageObject(prompt) or not S.coreChurchContext(prompt) then return 0 end
     local label = S.coreChurchText(prompt) .. " " .. S.coreChurchText(prompt.Parent)
     local score = S.coreChurchActionScore(label)
     if score <= 0 then return 0 end
     local token = S.normalizeGearToken(label)
     local gear = token:find("gear", 1, true) or token:find("equipment", 1, true) or token:find("items", 1, true)
     local save = token:find("save", 1, true) or token:find("bank", 1, true) or token:find("extract", 1, true)
-    if save and gear then return score + 150 end
-    local ancestor = scope or prompt.Parent
-    for _ = 1, 8 do
-        if not ancestor or ancestor == Workspace then break end
-        if string.lower(ancestor.Name):find("church", 1, true) then return score end
-        ancestor = ancestor.Parent
-    end
-    return 0
+    return score + (save and gear and 150 or 0)
 end
 
 function S.coreChurchRoot(inst)
-    local fallback = inst:IsA("ProximityPrompt") and inst.Parent or inst
-    local ancestor, nearest = fallback, nil
-    for _ = 1, 10 do
-        if not ancestor or ancestor == Workspace then break end
-        if ancestor:IsA("Model") then
-            nearest = nearest or ancestor
-            if string.lower(ancestor.Name):find("church", 1, true) then return ancestor end
-        end
-        ancestor = ancestor.Parent
-    end
-    return nearest or fallback
+    return S.coreChurchContext(inst)
 end
 
 function S.coreStandAtAltar(prompt, gen, attempt)
@@ -24830,7 +25200,8 @@ function S.coreRememberChurch(inst)
     if isPrompt then
         if S.coreSavePromptScore(inst) <= 0 then return end
         inst = S.coreChurchRoot(inst)
-    elseif not (inst:IsA("Model") or inst:IsA("BasePart")) or not string.lower(inst.Name):find("church", 1, true) then return end
+    elseif not (inst:IsA("Model") or inst:IsA("BasePart")) or not (string.lower(inst.Name):find("church", 1, true) or string.lower(inst.Name):find("chapel", 1, true)) then return end
+    if not inst or S.coreStorageObject(inst) then return end
     local pos = S.getInstancePosition(inst)
     if not pos then return end
     CoreFarm._churchCandidates = CoreFarm._churchCandidates or setmetatable({}, { __mode = "k" })
@@ -24874,7 +25245,7 @@ function S.coreStartLootWatch()
     end)
     State.connections.coreLootTagged = CollectionService:GetInstanceAddedSignal("DungeonLootHighlightTarget"):Connect(S.coreRecordLoot)
     State.connections.coreChurchAdded = Workspace.DescendantAdded:Connect(function(inst)
-        if active() and (inst:IsA("ProximityPrompt") or string.lower(inst.Name):find("church", 1, true)) then S.coreRememberChurch(inst) end
+        if active() and (inst:IsA("ProximityPrompt") or (string.lower(inst.Name):find("church", 1, true) or string.lower(inst.Name):find("chapel", 1, true))) then S.coreRememberChurch(inst) end
     end)
     S.coreSnapshotLoot()
 end
@@ -24897,6 +25268,10 @@ function S.coreStandNear(pos, gen)
     if not S.coreFinishActive(gen) then return false end
     local root = S.getRoot()
     if not root then return false end
+    if type(gen) == "table" and gen.farm then
+        local stand = pos + Vector3.new(0, 2.5, 3)
+        Autofarm._mineHoldPos, Autofarm._gatePinY = stand, stand.Y
+    end
     root.Anchored = false
     root.CFrame = CFrame.new(pos + Vector3.new(0, 2.5, 3))
     root.AssemblyLinearVelocity = Vector3.zero
@@ -24941,8 +25316,13 @@ function S.coreCollectKeptItem(entry, gen)
         -- Disappearing from the world alone is not proof of inventory ownership.
         return S.coreOwnedCount(entry.keys) > before
     end
-    for _ = 1, 2 do
+    local roomTried = false
+    for attempt = 1, 2 do
         if not S.coreFinishActive(gen) then return false end
+        if attempt == 2 and not slot and not collected() and (#S.hotbarTools() >= S.hotbarLimit() or S.hotbarFullHint()) and not roomTried then
+            roomTried = true
+            if S._collector.freeSlots == false or not S.hotbarMakeRoom(entry, gen, true) then return false end
+        end
         if collected() then return true end
         if not item.Parent then return false end
         local pos = S.getItemPosition(item) or entry.pos
@@ -24977,6 +25357,13 @@ function S.coreCollectKeptLoot(gen)
             if a.kind == "Shard" then return true end
             if b.kind == "Shard" then return false end
         end
+        if S._collector.legendaryFirst and a.kind == "Shard" and b.kind == "Shard" then
+            local function priority(entry)
+                local token = S.normalizeGearToken(entry.name .. tostring(entry.item:GetAttribute("Rarity") or ""))
+                return token:find("legendary", 1, true) and 100 or token:find("rare", 1, true) and 50 or 0
+            end
+            if priority(a) ~= priority(b) then return priority(a) > priority(b) end
+        end
         if a.tier ~= b.tier then return a.tier > b.tier end
         return a.name < b.name
     end)
@@ -24992,6 +25379,7 @@ function S.coreCollectKeptLoot(gen)
 end
 
 function S.coreEquipKeptTools(gen)
+    if S._collector.equip == false then return end
     local tools, seen = {}, {}
     local function scan(container)
         if not container then return end
@@ -25061,7 +25449,7 @@ function S.coreFindChurch(gen, force)
             inspected = inspected + 1
             if child:IsA("ProximityPrompt") and S.coreSavePromptScore(child) > 0 then
                 consider(S.coreChurchRoot(child), true)
-            elseif (child:IsA("Model") or child:IsA("BasePart")) and string.lower(child.Name):find("church", 1, true) then
+            elseif (child:IsA("Model") or child:IsA("BasePart")) and (string.lower(child.Name):find("church", 1, true) or string.lower(child.Name):find("chapel", 1, true)) then
                 S.coreRememberChurch(child); consider(child)
             end
             if bestScore >= 150 then CoreFarm._church = best; return best.inst end
@@ -25109,22 +25497,24 @@ function S.coreChurchActionScore(text)
 end
 
 function S.coreChurchTargets(church)
-    if not church or not church:IsDescendantOf(Workspace) then return nil end
+    if not church or not church:IsDescendantOf(Workspace) or not S.coreChurchContext(church)
+        or S.coreStorageObject(church) then return nil end
     local prompt, target, pad, best = nil, nil, nil, 0
     for _, candidate in ipairs(S.collectProximityPrompts(church)) do
-        local score = S.coreSavePromptScore(candidate, church)
+        local score = S.coreSavePromptScore(candidate)
         if score > best and S.getPromptWorldPosition(candidate) then prompt, best = candidate, score end
     end
     local ancestor = prompt and prompt.Parent
     while ancestor and ancestor ~= Workspace do
-        if CollectionService:HasTag(ancestor, "Interactive") then target = ancestor; break end
+        if CollectionService:HasTag(ancestor, "Interactive") and not S.coreStorageObject(ancestor) then target = ancestor; break end
         if ancestor == church then break end
         ancestor = ancestor.Parent
     end
     if not target then
         local targetScore = 0
         for _, candidate in ipairs(CollectionService:GetTagged("Interactive")) do
-            if candidate == church or candidate:IsDescendantOf(church) then
+            if (candidate == church or candidate:IsDescendantOf(church)) and S.coreChurchContext(candidate)
+                and not S.coreStorageObject(candidate) then
                 local score = S.coreChurchActionScore(S.coreChurchText(candidate))
                 if score > targetScore then target, targetScore = candidate, score end
             end
@@ -25133,7 +25523,9 @@ function S.coreChurchTargets(church)
     if not prompt and not target then
         for _, child in ipairs(church:GetDescendants()) do
             if child:IsA("TouchTransmitter") and child.Parent and child.Parent:IsA("BasePart")
-                and S.coreChurchActionScore(S.coreChurchText(child.Parent)) > 0 then pad = child.Parent; break end
+                and S.coreChurchContext(child.Parent) and S.coreChurchActionScore(S.coreChurchText(child.Parent)) > 0 then
+                pad = child.Parent; break
+            end
         end
     end
     return prompt, target, pad, best
@@ -25355,7 +25747,7 @@ function S.coreFindSaveButton(buttons)
 end
 
 function S.coreFireChurchButton(button, force)
-    if S._unloaded or CoreFarm._teleportPending or S._churchClickBusy or S.coreChurchConfirmScore(button) <= 0 then return false end
+    if S._unloaded or (S._collector and S._collector.busy) or S._chestInteraction or CoreFarm._teleportPending or S._churchClickBusy or S.coreChurchConfirmScore(button) <= 0 then return false end
     if CoreFarm._churchPaused and not force then return false end
     S._churchClicks = S._churchClicks or setmetatable({}, { __mode = "k" })
     local now, last = os.clock(), S._churchClicks[button]
@@ -25390,7 +25782,7 @@ function S.coreChurchAutoConfirmTick()
     if S._unloaded or not S._uiReady or S._configLoading or game.PlaceId ~= KLZE.placeId then return end
     -- The finish loop owns confirmation when running. This also catches a
     -- church menu that was already open when the script was executed.
-    if CoreFarm._churchReturning or CoreFarm._churchPaused or CoreFarm._teleportPending
+    if (S._collector and S._collector.busy) or S._chestInteraction or CoreFarm._churchReturning or CoreFarm._churchPaused or CoreFarm._teleportPending
         or S._churchClickBusy or CoreFarm._ownedRun or Autofarm.enabled then return end
     local _, buttons = S.coreChurchConfirmButtons()
     local button = S.coreFindSaveButton(buttons)
@@ -25451,7 +25843,9 @@ function S.coreChurchConfirmScore(button)
     local gear = context:find("items", 1, true) or context:find("gear", 1, true)
         or context:find("equipment", 1, true) or context:find("loadout", 1, true) or context:find("inventory", 1, true)
     local church = context:find("church", 1, true) or context:find("extract", 1, true)
-    if not church and not (saved and gear) then return 0 end
+    local lobby = context:find("lobby", 1, true) or context:find("returntohub", 1, true)
+    if context:find("loadout", 1, true) or context:find("crate", 1, true) then return 0 end
+    if not church and not (saved and gear and lobby) then return 0 end
     if context:find("notbesaved", 1, true) or context:find("withoutsav", 1, true) then return 0 end
     local score = (token:find("teleport", 1, true) and 120 or token:find("save", 1, true) and 100 or 40) + (gear and 10 or 0)
     score = score + (teleportCaption and 25 or 0) + (button:IsA("GuiButton") and 10 or button:IsA("Frame") and 5 or 0)
@@ -25488,7 +25882,7 @@ function S.coreChurchConfirmButtons()
 end
 
 function S.coreChurchExit(church, gen, attempt)
-    if not church or not S.coreFinishActive(gen) then return false end
+    if not church or not S.coreFinishActive(gen) or not S.coreChurchContext(church) then return false end
     if S.coreChurchReady() then return true end
     attempt = tonumber(attempt) or 1
     if CoreFarm._teleportFailed and CoreFarm._churchOpenLastMethod then
@@ -25605,6 +25999,8 @@ function S.coreFinishRun(before, gen)
     Autofarm.openChests = false
     S.notify("Core", "Chest laps done · collecting shards and King's/Phoenix gear", 5)
     S.coreCollectKeptLoot(gen)
+    if not S.coreFinishActive(gen) then return end
+    S.collectorFinishExtras(gen)
     if not S.coreFinishActive(gen) then return end
     S.coreEquipKeptTools(gen)
     S.coreStopLootWatch()
@@ -25875,7 +26271,7 @@ function S.buildCoreTab(Window)
         end,
     })
     tab:CreateParagraph({
-        Title = "Core v1.1.42",
+        Title = "Core v1.2.0",
         Content = "Starts automatically without a config. After Laps (default 2): collect every found shard into the hotbar, equip King's/Phoenix gear, then open the church menu and confirm Teleport to return to the lobby and repeat. Other loot is ignored. Pickups are paced; no per-frame loot scans.",
     })
 end
@@ -25918,6 +26314,7 @@ function S.coreCopyDebug()
         .. "\nStatus: " .. tostring(CoreFarm._statusText or "Starting")
         .. "\nLaps: " .. tostring(CoreFarm.laps or 0) .. "/" .. tostring(CoreFarm.rescans or 2)
         .. "\nLoot: " .. tostring(CoreFarm._keptCount or 0) .. " collected, " .. tostring(CoreFarm._missedCount or 0) .. " missed"
+        .. "\nCollector: " .. tostring(S._collector and S._collector.status or "idle")
         .. "\nAltar in range: " .. tostring(CoreFarm._altarInRange == true)
         .. "\n" .. tostring(CoreFarm._lastCycleError or "No startup error")
         .. "\n" .. table.concat(S._interactionLog or {}, "\n")
@@ -27086,9 +27483,9 @@ function S.buildUI()
     S._configLoading = false
     if not ok then error(err) end
     if S._klzeHub then pcall(S._klzeHub.setAntiAfk, true) end
-    pcall(S.setFullbright, true)
+    pcall(S.setFullbright, false)
     S._uiReady = true
-    S.hubLog("Core Farm dashboard ready")
+    S.hubLog("Autofarm ready")
     S.coreBootAutoload()
 end
 
@@ -27206,5 +27603,7 @@ task.spawn(function()
         if S._unloaded then return end
         local ok, err = pcall(S.coreChurchAutoConfirmTick)
         if not ok then S.interactionNote("church watcher", tostring(err):sub(1, 120)) end
+        local collected, collectErr = pcall(S.collectorTick)
+        if not collected then S.interactionNote("loot worker", tostring(collectErr):sub(1, 120)) end
     end
 end)
