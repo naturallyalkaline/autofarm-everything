@@ -1,6 +1,6 @@
 --[[
-    KLZE Hub — Drill to Earth's Core (place 74507545904779)
-    v1.1.40 — Chest laps → shard hotbar / King's + Phoenix gear → church → lobby.
+    CORE FARM — Drill to Earth's Core (place 74507545904779)
+    v1.1.42 — Chest laps → shard hotbar / King's + Phoenix gear → church → lobby.
     Shop watch and the old depth overlay are not included.
 ]]
 
@@ -34,7 +34,7 @@ local KLZE = {
     game = "Drill to Earth's Core",
     discord = "https://discord.gg/wQRybxxHdX",
     site = "https://klze-hub.pages.dev",
-    version = "1.1.40",
+    version = "1.1.42",
     obsidian = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/",
 }
 
@@ -61,7 +61,7 @@ if game.PlaceId ~= KLZE.placeId and game.PlaceId ~= 101906032112547 then
     warn("[KLZE DTEC] PlaceId mismatch:", game.PlaceId, "expected", KLZE.placeId)
 end
 
-local HUB_NAME = "KLZE HUB"
+local HUB_NAME = "CORE FARM"
 
 local function stripBom(source)
     if type(source) ~= "string" then
@@ -1467,26 +1467,396 @@ function S.attachKlzeUiAdapter(Window, Library)
     return rf
 end
 
-do
-    local Hub = S.buildKlzeHub()
-    local Window, Library, SaveManager, ThemeManager, meta = Hub.create({
-        Game = KLZE.game,
-        Version = KLZE.version,
-        DiscordInvite = KLZE.discord,
-        SiteUrl = KLZE.site,
-        ShowHomeTab = false,
-        HubBlurb = "Automatic solo chest cycle.",
-    })
-    S._klzeHub = Hub
-    S._klzeWindow = Window
-    S._klzeLibrary = Library
-    S._klzeSave = SaveManager
-    S._klzeTheme = ThemeManager
-    S._klzeMeta = meta
-    Rayfield = S.attachKlzeUiAdapter(Window, Library)
+function S.createFarmUi()
+    local ui = { connections = {}, cache = {}, closed = false }
+    local library = { Unloaded = false, UnloadSignals = {}, Toggles = {}, Options = {} }
+    local rf = { Flags = {} }
+    local C = {
+        background = Color3.fromHex("0e131b"), panel = Color3.fromHex("161e2a"),
+        border = Color3.fromHex("2b3748"), raised = Color3.fromHex("202e40"),
+        red = Color3.fromHex("8eb8ef"), deepRed = Color3.fromHex("365b8c"),
+        mutedRed = Color3.fromHex("2c4465"), white = Color3.fromHex("edf3fc"),
+        muted = Color3.fromHex("a6b6cb"), faint = Color3.fromHex("7e90a8"),
+    }
+    ui.colors, ui.library = C, library
+    S._farmUi = ui
+    local function connect(signal, callback)
+        local connection = signal:Connect(function(...)
+            if not library.Unloaded then callback(...) end
+        end)
+        ui.connections[#ui.connections + 1] = connection
+        return connection
+    end
+    local function create(class, name, parent, props)
+        local node = Instance.new(class)
+        node.Name = name
+        for key, value in pairs(props or {}) do node[key] = value end
+        node.Parent = parent
+        return node
+    end
+    local function round(node, radius)
+        create("UICorner", "Corner", node, { CornerRadius = UDim.new(0, radius or 9) })
+    end
+    local function stroke(node, color, thickness)
+        return create("UIStroke", "Outline", node, {
+            Color = color or C.border, Thickness = thickness or 1,
+            ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+        })
+    end
+    local function box(name, parent, x, y, w, h, color, radius)
+        local node = create("Frame", name, parent, {
+            Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(w, h),
+            BackgroundColor3 = color or C.panel, BorderSizePixel = 0,
+        })
+        if radius then round(node, radius) end
+        return node
+    end
+    local function text(name, parent, x, y, w, h, value, size, color, font)
+        return create("TextLabel", name, parent, {
+            Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(w, h),
+            BackgroundTransparency = 1, BorderSizePixel = 0,
+            Text = value or "", TextColor3 = color or C.white,
+            TextSize = size or 12, Font = font or Enum.Font.Gotham,
+            TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Center,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+        })
+    end
+    local function button(name, parent, x, y, w, h, caption, color)
+        local node = create("TextButton", name, parent, {
+            Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(w, h),
+            BackgroundColor3 = color or C.raised, BorderSizePixel = 0,
+            AutoButtonColor = false, Active = true, Text = caption,
+            TextColor3 = C.white, TextSize = 12, Font = Enum.Font.GothamBold,
+        })
+        round(node, 7)
+        return node
+    end
+    local function hover(node, normal, highlighted)
+        connect(node.MouseEnter, function() node.BackgroundColor3 = highlighted end)
+        connect(node.MouseLeave, function() node.BackgroundColor3 = normal end)
+    end
+    local function setText(node, value)
+        value = tostring(value or "")
+        if node.Text ~= value then node.Text = value end
+    end
+    local function flag(name, value, paint)
+        local element = { Flag = name, CurrentValue = value, _obsidian = { Value = value } }
+        function element:Set(nextValue)
+            self.CurrentValue, self._obsidian.Value = nextValue, nextValue
+            if paint then paint(nextValue) end
+        end
+        rf.Flags[name] = element
+        if type(value) == "boolean" then library.Toggles[name] = element._obsidian
+        else library.Options[name] = element._obsidian end
+        return element
+    end
+    function library:OnUnload(callback) self.UnloadSignals[#self.UnloadSignals + 1] = callback end
+    function library:Unload()
+        if self.Unloaded then return end
+        self.Unloaded = true
+        for _, connection in ipairs(ui.connections) do pcall(function() connection:Disconnect() end) end
+        ui.connections = {}
+        if self.ScreenGui then self.ScreenGui:Destroy() end
+        for _, callback in ipairs(self.UnloadSignals) do pcall(callback) end
+        self.UnloadSignals = {}
+    end
+    function library:Notify(message, duration)
+        if self.Unloaded or not ui.toast then return end
+        ui.toastToken = (ui.toastToken or 0) + 1
+        local token = ui.toastToken
+        setText(ui.toastText, type(message) == "table" and (message.Description or message.Title) or message)
+        ui.toast.Visible = true
+        task.delay(math.clamp(tonumber(duration) or 4, 1, 12), function()
+            if not self.Unloaded and ui.toastToken == token then ui.toast.Visible = false end
+        end)
+    end
+    function library:Toggle()
+        if not ui.main then return end
+        ui.main.Visible = not ui.main.Visible
+        ui.restore.Visible = not ui.main.Visible
+        if ui.popup then ui.popup.Visible, ui.scrim.Visible = false, false end
+        ui.drag = nil
+    end
+    function rf:Notify(opts)
+        opts = opts or {}
+        library:Notify((opts.Title and opts.Title .. " · " or "") .. tostring(opts.Content or ""), opts.Duration)
+    end
+    function rf:CreateWindow() return self end
+    function rf.LoadConfiguration() end
+
+    function ui:mount()
+        if self.main then return end
+        local playerGui = LocalPlayer:FindFirstChild("PlayerGui") or LocalPlayer:WaitForChild("PlayerGui", 15)
+        if not playerGui then error("PlayerGui is not ready") end
+        local screen = create("ScreenGui", "KLZE_CoreFarm", playerGui, {
+            ResetOnSpawn = false, IgnoreGuiInset = true, DisplayOrder = 100,
+            ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+        })
+        library.ScreenGui = screen
+        local main = box("FarmDashboard", screen, 0, 0, 820, 584, C.background, 14)
+        main.AnchorPoint, main.Position, main.Active = Vector2.new(0.5, 0.5), UDim2.fromScale(0.5, 0.5), true
+        stroke(main, C.border)
+        ui.main, ui.scale = main, create("UIScale", "ResponsiveScale", main, { Scale = 1 })
+        -- Header artwork is made from native shapes and text, without image assets.
+        local header = button("DragHeader", main, 0, 0, 820, 88, "", Color3.fromHex("192535"))
+        header:FindFirstChild("Corner").CornerRadius = UDim.new(0, 14)
+        create("UIGradient", "HeaderShade", header, {
+            Color = ColorSequence.new(Color3.fromHex("1b2c43"), Color3.fromHex("141d2a")), Rotation = 0,
+        })
+        box("CrimsonEdge", main, 24, 0, 772, 2, C.red)
+        local emblem = box("FarmEmblem", main, 24, 22, 48, 48, Color3.fromHex("253a55"), 9)
+        stroke(emblem, C.mutedRed)
+        text("FarmMonogram", emblem, 5, 6, 41, 36, "CF", 22, C.red, Enum.Font.GothamBlack)
+        box("EmblemLine", emblem, 11, 38, 26, 2, C.red, 1)
+        text("Brand", main, 91, 21, 410, 34, "CORE FARM", 25, C.white, Enum.Font.GothamBlack)
+        text("Tagline", main, 93, 56, 400, 15, "CHESTS / LOOT / SAVE", 10, C.muted, Enum.Font.GothamBold)
+        text("Game", main, 535, 29, 180, 18, "DRILL TO EARTH'S CORE", 10, C.muted, Enum.Font.Code)
+        local hide = button("HideMenu", main, 734, 25, 62, 30, "HIDE", C.raised)
+        hover(hide, C.raised, C.mutedRed)
+        connect(hide.Activated, function() library:Toggle() end)
+        box("NavigationRule", main, 24, 130, 772, 1, C.border)
+        box("ActiveUnderline", main, 24, 129, 96, 2, C.red)
+        text("PageName", main, 24, 99, 180, 22, "AUTOFARM", 12, C.white, Enum.Font.GothamBold)
+        text("QueueMode", main, 558, 100, 238, 20, "UNRANKED  /  SOLO", 10, C.muted, Enum.Font.Code).TextXAlignment = Enum.TextXAlignment.Right
+
+        local cycle = box("CycleCard", main, 24, 144, 488, 190, C.panel, 10); stroke(cycle)
+        text("CycleHeading", cycle, 20, 16, 290, 20, "AUTOMATIC CYCLE", 10, C.red, Enum.Font.GothamBold)
+        ui.master = button("CycleToggle", cycle, 370, 13, 98, 30, "ON", C.deepRed)
+        ui.status = text("CycleStatus", cycle, 20, 48, 448, 44, "Starting autofarm", 21, C.white, Enum.Font.GothamBold)
+        ui.status.TextWrapped, ui.status.TextTruncate = true, Enum.TextTruncate.None
+        ui.steps = {}
+        for index, name in ipairs({ "CHESTS", "LOOT", "CHURCH", "LOBBY" }) do
+            local step = box("Phase" .. index, cycle, 20 + (index - 1) * 113, 104, 109, 25, C.raised, 4)
+            local caption = text("Caption", step, 0, 0, 109, 25, name, 9, C.muted, Enum.Font.GothamBold)
+            caption.TextXAlignment = Enum.TextXAlignment.Center
+            ui.steps[index] = { box = step, caption = caption }
+        end
+        ui.progressText = text("LapProgress", cycle, 20, 143, 448, 16, "0 / 2 chest laps complete", 11, C.muted)
+        local track = box("ProgressTrack", cycle, 20, 167, 448, 5, C.raised, 3)
+        ui.progressFill = box("ProgressFill", track, 0, 0, 0, 5, C.red, 3)
+
+        local kept = box("KeptCard", main, 24, 350, 236, 94, C.panel, 10); stroke(kept)
+        text("Heading", kept, 17, 12, 204, 16, "ITEMS COLLECTED", 9, C.muted, Enum.Font.GothamBold)
+        ui.kept = text("KeptValue", kept, 17, 31, 200, 42, "0", 31, C.white, Enum.Font.GothamBold)
+        local missed = box("MissedCard", main, 276, 350, 236, 94, C.panel, 10); stroke(missed)
+        text("Heading", missed, 17, 12, 204, 16, "PICKUPS MISSED", 9, C.muted, Enum.Font.GothamBold)
+        ui.missed = text("MissedValue", missed, 17, 31, 200, 42, "0", 31, C.white, Enum.Font.GothamBold)
+
+        local actions = box("RecoveryCard", main, 24, 460, 488, 70, C.panel, 10); stroke(actions)
+        ui.confirm = button("ConfirmChurch", actions, 14, 15, 285, 40, "Retry church return", C.deepRed)
+        hover(ui.confirm, C.deepRed, C.red)
+        local copy = button("CopyDebug", actions, 311, 15, 163, 40, "Copy Debug", C.raised)
+        stroke(copy); hover(copy, C.raised, C.mutedRed)
+        connect(ui.confirm.Activated, function() S.coreRetryChurchReturn() end)
+        connect(copy.Activated, S.coreCopyDebug)
+
+        local setup = box("SetupCard", main, 536, 144, 260, 244, C.panel, 10); stroke(setup)
+        text("SetupHeading", setup, 18, 16, 224, 20, "RUN SETUP", 10, C.red, Enum.Font.GothamBold)
+        text("LapsLabel", setup, 18, 48, 150, 18, "Chest laps", 12)
+        local stepper = box("LapStepper", setup, 18, 74, 224, 36, C.background, 7); stroke(stepper)
+        local minus = button("DecreaseLaps", stepper, 2, 2, 40, 32, "−", C.raised)
+        local plus = button("IncreaseLaps", stepper, 182, 2, 40, 32, "+", C.raised)
+        ui.lapsValue = text("LapsValue", stepper, 44, 0, 136, 36, tostring(CoreFarm.rescans or 2), 15, C.white, Enum.Font.GothamBold)
+        ui.lapsValue.TextXAlignment = Enum.TextXAlignment.Center
+        text("ChestTypesLabel", setup, 18, 124, 224, 18, "Chest types", 12)
+        ui.typesButton = button("ChestTypes", setup, 18, 150, 224, 36, "All chest types  ▾", C.background)
+        stroke(ui.typesButton)
+        text("FilterHeading", setup, 18, 201, 224, 13, "AUTO-KEEP", 9, C.faint, Enum.Font.GothamBold)
+        text("FilterText", setup, 18, 220, 224, 14, "Shards · King's · Phoenix", 11, C.muted)
+
+        local utilities = box("UtilityCard", main, 536, 404, 260, 126, C.panel, 10); stroke(utilities)
+        text("UtilityHeading", utilities, 18, 11, 224, 18, "ESSENTIALS", 9, C.red, Enum.Font.GothamBold)
+        local function toggleRow(label, y, name, initial, callback)
+            text(name .. "Label", utilities, 18, y, 160, 26, label, 11, C.white)
+            local toggle = button(name, utilities, 194, y + 3, 48, 22, "", C.raised)
+            toggle:FindFirstChild("Corner").CornerRadius = UDim.new(0, 11)
+            local dot = box("Thumb", toggle, 3, 3, 16, 16, C.white, 8)
+            local control = flag(name, initial, function(value)
+                toggle.BackgroundColor3 = value and C.deepRed or C.raised
+                dot.Position = UDim2.fromOffset(value and 29 or 3, 3)
+            end)
+            control:Set(initial)
+            connect(toggle.Activated, function()
+                local value = not control.CurrentValue
+                control:Set(value); callback(value)
+            end)
+        end
+        toggleRow("Anti-AFK", 39, "klze_autofarm_anti_afk", true, function(value)
+            if S._klzeHub then pcall(S._klzeHub.setAntiAfk, value) end
+        end)
+        S._quietNotifications = S._quietNotifications ~= false
+        toggleRow("Quiet notifications", 77, "klze_quiet_notifications", S._quietNotifications, function(value)
+            S._quietNotifications = value
+        end)
+
+        box("FooterRule", main, 24, 551, 772, 1, C.border)
+        text("FooterBrand", main, 24, 559, 300, 16, "CORE FARM  /  v" .. KLZE.version, 9, C.faint, Enum.Font.Code)
+        text("Shortcut", main, 331, 559, 300, 16, "RIGHT CTRL  ·  SHOW / HIDE", 9, C.muted, Enum.Font.Code)
+        local unload = button("UnloadScript", main, 711, 556, 85, 22, "UNLOAD", C.background)
+        unload.TextColor3, unload.TextSize = C.muted, 9
+        connect(unload.Activated, function() library:Unload() end)
+
+        ui.restore = button("RestoreFarm", screen, 18, 100, 144, 36, "CORE FARM", C.panel)
+        stroke(ui.restore, C.mutedRed); ui.restore.TextColor3, ui.restore.Visible = C.red, false
+        connect(ui.restore.Activated, function() library:Toggle() end)
+        ui.toast = box("Notification", screen, 0, 0, 380, 52, C.panel, 9)
+        ui.toast.AnchorPoint, ui.toast.Position = Vector2.new(1, 1), UDim2.new(1, -20, 1, -20)
+        stroke(ui.toast, C.mutedRed); ui.toast.Visible = false
+        box("ToastAccent", ui.toast, 0, 9, 3, 34, C.red, 1)
+        ui.toastText = text("ToastText", ui.toast, 16, 6, 350, 40, "", 11, C.white)
+        ui.toastText.TextWrapped = true
+
+        local master = flag("dtec_core_open", CoreFarm.enabled == true, function(value)
+            ui.master.BackgroundColor3 = value and C.deepRed or C.raised
+            setText(ui.master, value and "●  ON" or "○  OFF")
+        end)
+        master:Set(CoreFarm.enabled == true)
+        connect(ui.master.Activated, function()
+            local value = not master.CurrentValue
+            master:Set(value); S.coreMenuSetEnabled(value)
+        end)
+        local laps = flag("dtec_core_rescan", CoreFarm.rescans or 2, function(value) setText(ui.lapsValue, value) end)
+        local function changeLaps(delta)
+            local value = math.clamp((tonumber(laps.CurrentValue) or 2) + delta, 1, 10)
+            laps:Set(value); CoreFarm.rescans = value; S.coreMenuRefresh()
+        end
+        connect(minus.Activated, function() changeLaps(-1) end)
+        connect(plus.Activated, function() changeLaps(1) end)
+
+        local selection = S.chestSelectionList(CoreFarm.chestTypes)
+        local types = flag("dtec_core_chest_types", selection)
+        local chosen, rows = {}, {}
+        for _, label in ipairs(selection) do chosen[label] = true end
+        ui.scrim = button("DismissChestTypes", main, 0, 0, 820, 584, "", C.background)
+        ui.scrim.BackgroundTransparency, ui.scrim.ZIndex, ui.scrim.Visible = 1, 40, false
+        local popupHeight = math.min(224, 40 + #CHEST_TYPE_OPTIONS * 29)
+        ui.popup = box("ChestTypePicker", main, 552, 300, 224, popupHeight, C.background, 8)
+        ui.popup.ZIndex, ui.popup.Visible = 50, false
+        stroke(ui.popup, C.mutedRed)
+        text("PickerHeading", ui.popup, 12, 8, 200, 18, "KEEP AT LEAST ONE TYPE", 8, C.faint, Enum.Font.GothamBold).ZIndex = 51
+        local scroll = create("ScrollingFrame", "ChestTypeOptions", ui.popup, {
+            Position = UDim2.fromOffset(8, 32), Size = UDim2.new(1, -16, 1, -38),
+            BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 3,
+            ScrollBarImageColor3 = C.deepRed, CanvasSize = UDim2.fromOffset(0, #CHEST_TYPE_OPTIONS * 29),
+            ZIndex = 51,
+        })
+        local function paintTypes()
+            local picked = {}
+            for _, label in ipairs(CHEST_TYPE_OPTIONS) do if chosen[label] then picked[#picked + 1] = label end end
+            types:Set(picked)
+            CoreFarm.chestTypes, CoreFarm._chestPick = picked, picked
+            if CoreFarm.openAll or CoreFarm._ownedRun then Autofarm.chestTypes, Autofarm.openChests = picked, true end
+            setText(ui.typesButton, (#picked == #CHEST_TYPE_OPTIONS and "All chest types" or tostring(#picked) .. " types selected") .. "  ▾")
+            for label, row in pairs(rows) do
+                row.TextColor3 = chosen[label] and C.white or C.faint
+                row.BackgroundColor3 = chosen[label] and C.raised or C.background
+                row.Text = (chosen[label] and "✓  " or "○  ") .. label
+            end
+        end
+        for index, label in ipairs(CHEST_TYPE_OPTIONS) do
+            local row = button("ChestOption" .. index, scroll, 0, (index - 1) * 29, 204, 26, label, C.background)
+            row.ZIndex, row.TextSize, row.TextXAlignment = 52, 11, Enum.TextXAlignment.Left
+            create("UIPadding", "Padding", row, { PaddingLeft = UDim.new(0, 9) })
+            rows[label] = row
+            connect(row.Activated, function()
+                local count = 0; for _, enabled in pairs(chosen) do if enabled then count = count + 1 end end
+                if chosen[label] and count <= 1 then return end
+                chosen[label] = not chosen[label]; paintTypes()
+            end)
+        end
+        paintTypes()
+        connect(ui.typesButton.Activated, function()
+            ui.popup.Visible = not ui.popup.Visible; ui.scrim.Visible = ui.popup.Visible
+        end)
+        connect(ui.scrim.Activated, function() ui.popup.Visible, ui.scrim.Visible = false, false end)
+
+        local function fit()
+            local camera = Workspace.CurrentCamera
+            local viewport = camera and camera.ViewportSize or Vector2.new(1280, 720)
+            ui.viewport = viewport
+            ui.scale.Scale = math.min(1, math.max(0.25, math.min((viewport.X - 32) / 820, (viewport.Y - 48) / 584)))
+            main.Position = UDim2.fromScale(0.5, 0.5)
+        end
+        fit()
+        local camera = Workspace.CurrentCamera
+        if camera then ui.cameraConnection = connect(camera:GetPropertyChangedSignal("ViewportSize"), fit) end
+        connect(Workspace:GetPropertyChangedSignal("CurrentCamera"), function()
+            camera = Workspace.CurrentCamera
+            if ui.cameraConnection then ui.cameraConnection:Disconnect() end
+            if camera then ui.cameraConnection = connect(camera:GetPropertyChangedSignal("ViewportSize"), fit) end
+            fit()
+        end)
+        connect(header.InputBegan, function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                ui.drag = { input = input, x = input.Position.X, y = input.Position.Y, position = main.Position }
+            end
+        end)
+        connect(UserInputService.InputChanged, function(input)
+            local drag = ui.drag
+            if not drag or not screen.Enabled then return end
+            if input.UserInputType ~= Enum.UserInputType.MouseMovement and input ~= drag.input then return end
+            local viewport, scale = ui.viewport, ui.scale.Scale
+            local x = drag.position.X.Offset + input.Position.X - drag.x
+            local y = drag.position.Y.Offset + input.Position.Y - drag.y
+            x = math.clamp(x, -viewport.X * 0.5 + 410 * scale + 10, viewport.X * 0.5 - 410 * scale - 10)
+            y = math.clamp(y, -viewport.Y * 0.5 + 292 * scale + 10, viewport.Y * 0.5 - 292 * scale - 10)
+            main.Position = UDim2.new(0.5, x, 0.5, y)
+        end)
+        connect(UserInputService.InputEnded, function(input)
+            if ui.drag and (input == ui.drag.input or input.UserInputType == Enum.UserInputType.MouseButton1) then ui.drag = nil end
+        end)
+        connect(UserInputService.InputBegan, function(input, processed)
+            if not processed and screen.Enabled and input.KeyCode == Enum.KeyCode.RightControl and not UserInputService:GetFocusedTextBox() then library:Toggle() end
+        end)
+    end
+
+    function ui:refresh()
+        if not self.main or library.Unloaded then return end
+        local status = tostring(CoreFarm._statusText or "Starting autofarm")
+        setText(self.status, status)
+        local statusSize = #status > 58 and 14 or 21
+        if self.status.TextSize ~= statusSize then self.status.TextSize = statusSize end
+        local need = math.max(1, tonumber(CoreFarm.rescans) or 2)
+        local laps = math.min(need, tonumber(CoreFarm.laps) or 0)
+        setText(self.progressText, tostring(laps) .. " / " .. need .. " chest laps complete")
+        setText(self.kept, CoreFarm._keptCount or 0)
+        setText(self.missed, CoreFarm._missedCount or 0)
+        local ratio = laps / need
+        if self.cache.ratio ~= ratio then
+            self.cache.ratio = ratio; self.progressFill.Size = UDim2.fromOffset(448 * ratio, 5)
+        end
+        local stage = game.PlaceId == 101906032112547 and 4
+            or (CoreFarm._leaving and (CoreFarm._churchReturning or CoreFarm._churchSaveRequested) and 3)
+            or (CoreFarm._leaving and 2) or 1
+        if CoreFarm._userStop then stage = 0 end
+        if self.cache.stage ~= stage then
+            self.cache.stage = stage
+            for index, step in ipairs(self.steps) do
+                step.box.BackgroundColor3 = index == stage and C.mutedRed or C.raised
+                step.caption.TextColor3 = index == stage and C.white or C.faint
+            end
+        end
+    end
+    return rf, library
 end
+
+do
+    S._klzeHub = S.buildKlzeHub()
+    local nativeUi, library = S.createFarmUi()
+    Rayfield = nativeUi
+    S._klzeLibrary, S._klzeWindow = library, nativeUi
+    S._klzeSave, S._klzeTheme = nil, nil
+    library:OnUnload(function()
+        if not S._unloaded and type(S.unloadKlzeDtec) == "function" then S.unloadKlzeDtec() end
+    end)
+    if typeof(getgenv) == "function" then
+        getgenv().KLZE_OBSIDIAN_LIBRARY = library
+        getgenv().KLZE_OBSIDIAN_READY = true
+    end
+end
+
 if not Rayfield then
-    return warn("[KLZE DTEC] Obsidian UI failed to load")
+    return warn("[CORE FARM] UI failed to load")
 end
 
 local LOG_FILE = "terra_hub_debug.txt"
@@ -1511,9 +1881,14 @@ if typeof(writefile) == "function" then
 end
 
 function S.notify(title, text, duration)
-    pcall(function()
-        Rayfield:Notify({ Title = title, Content = text, Duration = duration or 4 })
-    end)
+    text = tostring(text or "")
+    local routine = title == "Core" and (text:match("^Lap %d") or text:find("Run on", 1, true)
+        or text:find("Chest laps done", 1, true) or text:find("Selected items ready", 1, true))
+    if routine and S._quietNotifications ~= false then
+        S.interactionNote("info", text)
+        return
+    end
+    pcall(function() Rayfield:Notify({ Title = title, Content = text, Duration = duration or 4 }) end)
 end
 
 function S.safeCall(label, fn)
@@ -11128,28 +11503,17 @@ function S.collectProximityPrompts(instance)
 end
 
 function S.getPromptWorldPosition(prompt)
-    if not prompt then
-        return nil
-    end
+    if not prompt then return nil end
     local parent = prompt.Parent
-    -- Gate.Attachment.ProximityPrompt → Attachment.WorldPosition
-    if parent and parent:IsA("Attachment") then
-        return parent.WorldPosition
+    if not parent then return nil end
+    if parent:IsA("Attachment") then return parent.WorldPosition end
+    if parent:IsA("BasePart") then return parent.Position end
+    if parent:IsA("Model") then
+        -- Roblox positions a model-parented prompt at its PrimaryPart, not at
+        -- the model pivot or whichever descendant happens to be returned first.
+        return parent.PrimaryPart and parent.PrimaryPart.Position or nil
     end
-    if parent and parent:IsA("BasePart") then
-        return parent.Position
-    end
-    if parent then
-        local att = parent:FindFirstChildWhichIsA("Attachment")
-        if att then
-            return att.WorldPosition
-        end
-        local part = parent:FindFirstChildWhichIsA("BasePart", true)
-        if part then
-            return part.Position
-        end
-    end
-    return S.getInstancePosition(prompt) or S.getItemPosition(prompt)
+    return nil
 end
 
 function S.promptActionLower(prompt)
@@ -15125,7 +15489,7 @@ function S.ensureFarmDebugHud()
         lab.RichText = false
         lab.Position = UDim2.fromOffset(10, 70)
         lab.Size = UDim2.fromOffset(420, 168)
-        lab.Text = "KLZE FARM"
+        lab.Text = "CORE FARM FARM"
         lab.Parent = gui
         local pad = Instance.new("UIPadding")
         pad.PaddingLeft = UDim.new(0, 8)
@@ -15162,7 +15526,7 @@ function S.refreshFarmDebugHud()
         local origin = Autofarm.origin
         local originTxt = origin and string.format("%.0f,%.0f", origin.X, origin.Z) or "nil"
         label.Text = string.format(
-            "KLZE FARM DEBUG  v%s\n%s  d=%.0f  spd=%d  y=%.1f\nhold: %s\nbusy=%s move=%s mine=%s cycle=%s\n%s\norigin %s  dir %s\nerr: %s",
+            "CORE FARM DEBUG  v%s\n%s  d=%.0f  spd=%d  y=%.1f\nhold: %s\nbusy=%s move=%s mine=%s cycle=%s\n%s\norigin %s  dir %s\nerr: %s",
             KLZE.version,
             Autofarm.enabled and "ON" or "OFF",
             Autofarm.distance or 0,
@@ -19823,10 +20187,10 @@ function S.findChestForAutofarm()
             consider(model)
         end
     end
-    if not best and S.chestWhitelistWants("core") and os.clock() - (Autofarm._coreMissNote or 0) > 8 then
+    if not best and S.chestWhitelistWants("core") and os.clock() - (Autofarm._coreMissNote or 0) > 30 then
         Autofarm._coreMissNote = os.clock()
-        local saw = #seenNames > 0 and table.concat(seenNames, ", ") or "nenhum"
-        S.notify("Core", "Nenhum baú Core. Perto: " .. saw, 5)
+        local saw = #seenNames > 0 and table.concat(seenNames, ", ") or "none"
+        S.interactionNote("chests", "No Core chest nearby. Nearby chest types: " .. saw .. ". Continuing the farm.")
     end
     return best
 end
@@ -24365,17 +24729,115 @@ function S.coreRecordLoot(item)
     end
 end
 
-function S.coreRememberChurch(inst)
-    if not inst or not (inst:IsA("Model") or inst:IsA("BasePart")) then return end
-    if string.lower(inst.Name):find("church", 1, true) then
-        local pos = S.getInstancePosition(inst)
-        if pos then
-            local current = CoreFarm._church
-            if not current or not current.inst:IsDescendantOf(Workspace) or inst:IsA("Model") then
-                CoreFarm._church = { inst = inst, pos = pos }
-            end
-        end
+function S.coreSavePromptScore(prompt, scope)
+    if not prompt or not prompt:IsA("ProximityPrompt") or not prompt.Parent or not prompt.Enabled then return 0 end
+    local label = S.coreChurchText(prompt) .. " " .. S.coreChurchText(prompt.Parent)
+    local score = S.coreChurchActionScore(label)
+    if score <= 0 then return 0 end
+    local token = S.normalizeGearToken(label)
+    local gear = token:find("gear", 1, true) or token:find("equipment", 1, true) or token:find("items", 1, true)
+    local save = token:find("save", 1, true) or token:find("bank", 1, true) or token:find("extract", 1, true)
+    if save and gear then return score + 150 end
+    local ancestor = scope or prompt.Parent
+    for _ = 1, 8 do
+        if not ancestor or ancestor == Workspace then break end
+        if string.lower(ancestor.Name):find("church", 1, true) then return score end
+        ancestor = ancestor.Parent
     end
+    return 0
+end
+
+function S.coreChurchRoot(inst)
+    local fallback = inst:IsA("ProximityPrompt") and inst.Parent or inst
+    local ancestor, nearest = fallback, nil
+    for _ = 1, 10 do
+        if not ancestor or ancestor == Workspace then break end
+        if ancestor:IsA("Model") then
+            nearest = nearest or ancestor
+            if string.lower(ancestor.Name):find("church", 1, true) then return ancestor end
+        end
+        ancestor = ancestor.Parent
+    end
+    return nearest or fallback
+end
+
+function S.coreStandAtAltar(prompt, gen, attempt)
+    if not S.coreFinishActive(gen) then return false end
+    local pos, root = S.getPromptWorldPosition(prompt), S.getRoot()
+    if not pos or not root or not prompt.Enabled then return false end
+    local range = tonumber(prompt.MaxActivationDistance) or 10
+    if range <= 0 then return false end
+    local directions = { Vector3.new(0, 0, 1), Vector3.new(0, 0, -1), Vector3.new(1, 0, 0), Vector3.new(-1, 0, 0) }
+    local side = directions[((tonumber(attempt) or 1) - 1) % #directions + 1]
+    local distance = math.min(3, range * 0.4)
+    local candidate = pos + side * distance + Vector3.new(0, math.min(0.8, range * 0.15), 0)
+    local humanoid = S.getHumanoid()
+    local hip = humanoid and tonumber(humanoid.HipHeight) or 2
+    local half = root.Size and root.Size.Y * 0.5 or 1
+    local leg = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Left Leg")
+    if leg and leg:IsA("BasePart") then half = half + leg.Size.Y end
+    pcall(function()
+        local params = RaycastParams.new()
+        params.FilterDescendantsInstances = { LocalPlayer.Character }
+        params.FilterType = Enum.RaycastFilterType.Exclude
+        params.RespectCanCollide = true
+        local hit = Workspace:Raycast(candidate + Vector3.new(0, 4, 0), Vector3.new(0, -12, 0), params)
+        if hit and hit.Normal.Y > 0.6 and hit.Position.Y <= pos.Y + 1.5 and hit.Position.Y >= pos.Y - 8 then
+            local grounded = Vector3.new(candidate.X, hit.Position.Y + (hip or 2) + half, candidate.Z)
+            if (grounded - pos).Magnitude < range * 0.85 then candidate = grounded end
+        end
+    end)
+    root.Anchored = false
+    if humanoid then humanoid.Sit, humanoid.PlatformStand = false, false end
+    local cf = CFrame.new(candidate)
+    pcall(function() cf = CFrame.lookAt(candidate, Vector3.new(pos.X, candidate.Y, pos.Z)) end)
+    root.CFrame, root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = cf, Vector3.zero, Vector3.zero
+    task.wait(0.2)
+    if not S.coreFinishActive(gen) then return false end
+    local livePos = S.getPromptWorldPosition(prompt)
+    local inRange = livePos and (root.Position - livePos).Magnitude < range * 0.95
+    S.interactionNote("altar position", inRange and "In prompt range · approach " .. tostring(attempt or 1) or "Position changed before interaction")
+    CoreFarm._altarInRange = inRange == true
+    return inRange == true
+end
+
+function S.coreRetryChurchReturn()
+    if S._unloaded or CoreFarm._churchRecoveryBusy or CoreFarm._churchReturning or CoreFarm._teleportPending then return false end
+    local _, buttons = S.coreChurchConfirmButtons()
+    if S.coreFindSaveButton(buttons) then return S.coreConfirmChurchNow(true) end
+    if not S.coreFinishActive(CoreFarm._finishGen) then
+        S.notify("Church", "Return recovery is available after the chest laps finish.", 4)
+        return false
+    end
+    local gen = CoreFarm._finishGen
+    CoreFarm._churchRecoveryBusy = true
+    task.spawn(function()
+        local ok, err = pcall(function()
+            S.coreSetStatus("Church: finding the save altar")
+            local church = S.coreFindChurch(gen, true)
+            if church and S.coreFinishActive(gen) then S.coreReturnLobby(CoreFarm._coresBefore, gen, church)
+            elseif S.coreFinishActive(gen) then S.coreSetStatus("Church: altar not loaded · retry return") end
+        end)
+        CoreFarm._churchRecoveryBusy = false
+        if not ok then S.interactionNote("church recovery", tostring(err)) end
+    end)
+    return true
+end
+
+function S.coreRememberChurch(inst)
+    if not inst then return end
+    local isPrompt = inst:IsA("ProximityPrompt")
+    if isPrompt then
+        if S.coreSavePromptScore(inst) <= 0 then return end
+        inst = S.coreChurchRoot(inst)
+    elseif not (inst:IsA("Model") or inst:IsA("BasePart")) or not string.lower(inst.Name):find("church", 1, true) then return end
+    local pos = S.getInstancePosition(inst)
+    if not pos then return end
+    CoreFarm._churchCandidates = CoreFarm._churchCandidates or setmetatable({}, { __mode = "k" })
+    CoreFarm._churchCandidates[inst] = pos
+    -- Names are only streaming hints. A real altar interaction must validate a
+    -- candidate before it can replace the selected church destination.
+    if not CoreFarm._church then CoreFarm._church = { inst = inst, pos = pos } end
 end
 
 function S.coreStopLootWatch()
@@ -24394,7 +24856,7 @@ end
 
 function S.coreStartLootWatch()
     S.coreStopLootWatch()
-    CoreFarm._lootSeen, CoreFarm._church = {}, nil
+    CoreFarm._lootSeen, CoreFarm._church, CoreFarm._churchCandidates = {}, nil, setmetatable({}, { __mode = "k" })
     local token = {}
     CoreFarm._lootWatchToken = token
     local function active() return CoreFarm._lootWatchToken == token and S.coreInventoryLocked() end
@@ -24412,7 +24874,7 @@ function S.coreStartLootWatch()
     end)
     State.connections.coreLootTagged = CollectionService:GetInstanceAddedSignal("DungeonLootHighlightTarget"):Connect(S.coreRecordLoot)
     State.connections.coreChurchAdded = Workspace.DescendantAdded:Connect(function(inst)
-        if active() and string.lower(inst.Name):find("church", 1, true) then S.coreRememberChurch(inst) end
+        if active() and (inst:IsA("ProximityPrompt") or string.lower(inst.Name):find("church", 1, true)) then S.coreRememberChurch(inst) end
     end)
     S.coreSnapshotLoot()
 end
@@ -24563,37 +25025,61 @@ function S.coreEquipKeptTools(gen)
     -- Tools stay in Character/Backpack (hotbar). Never Activate, sack, sell or drop them.
 end
 
-function S.coreFindChurch(gen)
-    local cached = CoreFarm._church
-    if cached and cached.inst:IsDescendantOf(Workspace) then return cached.inst end
-    if cached then
-        if not S.coreStandNear(cached.pos, gen) then return nil end
-        S.requestStreamAround(cached.pos, 1)
-        task.wait(0.25)
-    end
-    -- A single incremental search, limited to containers. Yield every 96 nodes.
-    local queue, head, inspected = { Workspace }, 1, 0
-    local deadline = os.clock() + 8
-    while head <= #queue and os.clock() < deadline and S.coreFinishActive(gen) do
-        local parent = queue[head]
-        queue[head], head = false, head + 1
-        for _, child in ipairs(parent:GetChildren()) do
-            inspected = inspected + 1
-            if string.lower(child.Name):find("church", 1, true) and (child:IsA("Model") or child:IsA("BasePart")) then
-                S.coreRememberChurch(child)
-                return child
-            end
-            if (child:IsA("Model") or child:IsA("Folder")) and child.Name ~= "Items"
-                and child ~= LocalPlayer.Character
-                and not (child:IsA("Model") and Players:GetPlayerFromCharacter(child)) then
-                queue[#queue + 1] = child
-            end
-            if inspected % 96 == 0 then
-                task.wait()
-                if not S.coreFinishActive(gen) or os.clock() >= deadline then return nil end
+function S.coreFindChurch(gen, force)
+    if not S.coreFinishActive(gen) then return nil end
+    local visited, candidates, best, bestScore = {}, {}, nil, 0
+    local function consider(inst, refresh)
+        if not inst or (visited[inst] and not refresh) or not inst:IsDescendantOf(Workspace) then return end
+        visited[inst] = true
+        local prompt, target, pad, score = S.coreChurchTargets(inst)
+        score = prompt and score or (target and 20 or pad and 15 or 0)
+        if score > bestScore then
+            local pos = prompt and S.getPromptWorldPosition(prompt) or S.getInstancePosition(target or pad)
+            if pos then
+                best, bestScore = { inst = inst, pos = pos, prompt = prompt, target = target, pad = pad }, score
             end
         end
     end
+    local cached = CoreFarm._church
+    if cached and not force then consider(cached.inst) end
+    if bestScore >= 150 then CoreFarm._church = best; return best.inst end
+    for inst in pairs(CoreFarm._churchCandidates or {}) do candidates[#candidates + 1] = inst end
+    for _, inst in ipairs(candidates) do consider(inst) end
+    if bestScore >= 150 then CoreFarm._church = best; return best.inst end
+    if cached and cached.pos then
+        -- Stream a remembered church without teleporting to a stale/decorative pivot.
+        S.requestStreamAround(cached.pos, 1)
+        task.wait(0.2)
+        if not S.coreFinishActive(gen) then return nil end
+        visited[cached.inst] = nil; consider(cached.inst)
+    end
+    local queue, head, inspected = { Workspace }, 1, 0
+    local deadline = os.clock() + 8
+    while head <= #queue and os.clock() < deadline and S.coreFinishActive(gen) do
+        local parent = queue[head]; queue[head], head = false, head + 1
+        for _, child in ipairs(parent:GetChildren()) do
+            inspected = inspected + 1
+            if child:IsA("ProximityPrompt") and S.coreSavePromptScore(child) > 0 then
+                consider(S.coreChurchRoot(child), true)
+            elseif (child:IsA("Model") or child:IsA("BasePart")) and string.lower(child.Name):find("church", 1, true) then
+                S.coreRememberChurch(child); consider(child)
+            end
+            if bestScore >= 150 then CoreFarm._church = best; return best.inst end
+            if child.Name ~= "Items" and child ~= LocalPlayer.Character
+                and (child:IsA("Model") or child:IsA("Folder") or child:IsA("BasePart") or child:IsA("Attachment"))
+                and not (child:IsA("Model") and Players:GetPlayerFromCharacter(child)) then queue[#queue + 1] = child end
+            if inspected % 96 == 0 then
+                task.wait()
+                if not S.coreFinishActive(gen) or os.clock() >= deadline then break end
+            end
+        end
+    end
+    if best and S.coreFinishActive(gen) then
+        CoreFarm._church = best
+        S.interactionNote("altar target", best.inst:GetFullName())
+        return best.inst
+    end
+    S.interactionNote("altar target", "No loaded save interaction found")
     return nil
 end
 
@@ -24623,10 +25109,11 @@ function S.coreChurchActionScore(text)
 end
 
 function S.coreChurchTargets(church)
+    if not church or not church:IsDescendantOf(Workspace) then return nil end
     local prompt, target, pad, best = nil, nil, nil, 0
     for _, candidate in ipairs(S.collectProximityPrompts(church)) do
-        local score = S.coreChurchActionScore(S.coreChurchText(candidate) .. " " .. S.coreChurchText(candidate.Parent))
-        if score > best then prompt, best = candidate, score end
+        local score = S.coreSavePromptScore(candidate, church)
+        if score > best and S.getPromptWorldPosition(candidate) then prompt, best = candidate, score end
     end
     local ancestor = prompt and prompt.Parent
     while ancestor and ancestor ~= Workspace do
@@ -24644,19 +25131,12 @@ function S.coreChurchTargets(church)
         end
     end
     if not prompt and not target then
-        -- Some church exits use a real touch pad rather than a prompt.
-        local n = 0
         for _, child in ipairs(church:GetDescendants()) do
-            n = n + 1
             if child:IsA("TouchTransmitter") and child.Parent and child.Parent:IsA("BasePart")
-                and S.coreChurchActionScore(S.coreChurchText(child.Parent)) > 0 then
-                pad = child.Parent
-                break
-            end
-            if n % 64 == 0 then task.wait() end
+                and S.coreChurchActionScore(S.coreChurchText(child.Parent)) > 0 then pad = child.Parent; break end
         end
     end
-    return prompt, target, pad
+    return prompt, target, pad, best
 end
 
 function S.interactionNote(stage, message)
@@ -25016,8 +25496,8 @@ function S.coreChurchExit(church, gen, attempt)
         CoreFarm._teleportFailed = false
     end
     local prompt, target, pad = S.coreChurchTargets(church)
-    local pos = (prompt and S.getPromptWorldPosition(prompt)) or S.getInstancePosition(target or pad or church)
-    if not pos or not S.coreStandNear(pos, gen) then return false end
+    local pos = (prompt and S.getPromptWorldPosition(prompt)) or S.getInstancePosition(target or pad)
+    if not pos then S.interactionNote("altar target", "No valid save interaction at this church"); return false end
     S.requestStreamAround(pos, 1)
     task.wait(0.3)
     if not S.coreFinishActive(gen) then return false end
@@ -25026,7 +25506,7 @@ function S.coreChurchExit(church, gen, attempt)
     local issued = false
     if prompt and prompt.Parent and prompt.Enabled then
         local promptPos = S.getPromptWorldPosition(prompt)
-        if not promptPos or not S.coreStandNear(promptPos, gen) then return false end
+        if not promptPos or not S.coreStandAtAltar(prompt, gen, attempt) then return false end
         local hold = math.max(0, tonumber(prompt.HoldDuration) or 0)
         local camera, backup, triggerConnection, backend, key, holding, own, wasEnabled
         local triggered = false
@@ -25098,6 +25578,8 @@ function S.coreChurchExit(church, gen, attempt)
         issued = ok
         if ok then S.coreFinishAwait(promise, 2, gen) end
     elseif pad then
+        local padPos = S.getInstancePosition(pad)
+        if not padPos or not S.coreStandNear(padPos, gen) then return false end
         local root = S.getRoot()
         if root then
             if typeof(firetouchinterest) == "function" then
@@ -25129,8 +25611,16 @@ function S.coreFinishRun(before, gen)
     if not S.coreFinishActive(gen) then return end
     S.notify("Core", "Selected items ready · going to church", 4)
     local church = S.coreFindChurch(gen)
+    if not church and S.coreFinishActive(gen) then
+        S.coreSetStatus("Church: waiting for the save altar to load")
+        task.wait(1)
+        if S.coreFinishActive(gen) then church = S.coreFindChurch(gen, true) end
+    end
+    if not S.coreFinishActive(gen) then return end
     if not church then
-        S.notify("Core", "Church not found. Items kept; return paused. Toggle chests off to stop.", 8)
+        CoreFarm._churchPaused = true
+        S.coreSetStatus("Church: save altar not loaded · retry return")
+        S.notify("Church", "Save altar not loaded. Your items are kept here. Use Retry church return.", 8)
         return
     end
     S.disconnectAll("coreReturnTeleport")
@@ -25185,7 +25675,7 @@ function S.coreReturnLobby(before, gen, church)
     if not church or not S.coreFinishActive(gen) or CoreFarm._churchReturning then return false end
     local session = {}
     CoreFarm._churchReturning, CoreFarm._churchPaused, CoreFarm._churchMenuSeen = session, false, false
-    CoreFarm._churchOpenLastMethod = nil
+    CoreFarm._churchOpenLastMethod, CoreFarm._churchNeedsResolve = nil, false
     S.coreTrackChurchTeleport(); S.coreSaveQueue()
     local ok, result = pcall(function()
         local _, buttons = S.coreChurchConfirmButtons()
@@ -25206,9 +25696,16 @@ function S.coreReturnLobby(before, gen, church)
             elseif not CoreFarm._teleportPending and os.clock() - openAt >= 8 then
                 if requests >= 4 then return false end
                 requests, openAt = requests + 1, os.clock()
+                if CoreFarm._churchNeedsResolve or not church:IsDescendantOf(Workspace) then
+                    local resolved = S.coreFindChurch(gen, true)
+                    if resolved then church = resolved end
+                    CoreFarm._churchNeedsResolve = false
+                end
                 S.coreSetStatus("Church: opening save dialog")
-                if not S.coreChurchExit(church, gen, requests) then
-                    if not S.coreFinishActive(gen) then return false end
+                local issued = S.coreChurchExit(church, gen, requests)
+                if not S.coreFinishActive(gen) then return false end
+                CoreFarm._churchNeedsResolve = not S.coreChurchReady()
+                if not issued then
                     S.interactionNote("church open", "No confirmed menu yet · attempt " .. requests .. "/4")
                 end
             end
@@ -25221,8 +25718,8 @@ function S.coreReturnLobby(before, gen, church)
     if not ok then S.interactionNote("church error", tostring(result):sub(1, 160)) end
     if not (ok and result) then
         CoreFarm._churchPaused = not CoreFarm._teleportPending
-        S.coreSetStatus(CoreFarm._teleportPending and "Church: teleport pending at server" or "Church: confirmation not accepted · Copy Church Debug")
-        S.notify("Church", "Save return is not confirmed. Keeping your items here; use Confirm Church Teleport to retry, or Copy Church Debug.", 8)
+        S.coreSetStatus(CoreFarm._teleportPending and "Church: teleport pending at server" or "Church: return paused · Retry church return")
+        S.notify("Church", "Save return is not confirmed. Keeping your items here; use Retry church return, or Copy Debug for details.", 8)
     end
     return ok and result == true
 end
@@ -25378,12 +25875,13 @@ function S.buildCoreTab(Window)
         end,
     })
     tab:CreateParagraph({
-        Title = "Core v1.1.40",
+        Title = "Core v1.1.42",
         Content = "Starts automatically without a config. After Laps (default 2): collect every found shard into the hotbar, equip King's/Phoenix gear, then open the church menu and confirm Teleport to return to the lobby and repeat. Other loot is ignored. Pickups are paced; no per-frame loot scans.",
     })
 end
 
 function S.coreMenuRefresh()
+    if S._farmUi then S._farmUi:refresh(); return end
     local labels = CoreFarm._menuLabels
     if not labels then return end
     local need = math.max(1, tonumber(CoreFarm.rescans) or 2)
@@ -25416,97 +25914,24 @@ function S.coreMenuSetEnabled(value)
 end
 
 function S.coreCopyDebug()
-    local text = "KLZE Autofarm v" .. KLZE.version .. "\nPlace: " .. tostring(game.PlaceId)
+    local text = "Core Farm v" .. KLZE.version .. "\nPlace: " .. tostring(game.PlaceId)
         .. "\nStatus: " .. tostring(CoreFarm._statusText or "Starting")
         .. "\nLaps: " .. tostring(CoreFarm.laps or 0) .. "/" .. tostring(CoreFarm.rescans or 2)
         .. "\nLoot: " .. tostring(CoreFarm._keptCount or 0) .. " collected, " .. tostring(CoreFarm._missedCount or 0) .. " missed"
+        .. "\nAltar in range: " .. tostring(CoreFarm._altarInRange == true)
         .. "\n" .. tostring(CoreFarm._lastCycleError or "No startup error")
         .. "\n" .. table.concat(S._interactionLog or {}, "\n")
     if S.copyToClipboard(text) then S.notify("Autofarm", "Debug copied", 3)
     else S.notify("Autofarm", "Clipboard is unavailable", 4) end
 end
 
-function S.buildAutofarmTab(Window)
-    local tab = Window:CreateTab("Autofarm")
-    tab:CreateSection("Automatic Cycle")
-    tab:CreateToggle({
-        Name = "Run Automatic Cycle",
-        CurrentValue = CoreFarm.enabled == true,
-        Flag = "dtec_core_open",
-        Callback = S.coreMenuSetEnabled,
-    })
-    CoreFarm._statusLabel = tab:CreateStatusLabel({ Name = "Status", Default = CoreFarm._statusText or "Starting" })
-    CoreFarm._menuValues = nil
-    CoreFarm._menuLabels = {
-        progress = tab:CreateStatusLabel({ Name = "Chest laps", Default = "0 / " .. tostring(CoreFarm.rescans or 2) .. " complete" }),
-        loot = tab:CreateStatusLabel({ Name = "Loot", Default = "0 collected · 0 missed" }),
-    }
-    tab:CreateParagraph({
-        Title = "Unranked · Solo",
-        Content = "Chests → shards and King's/Phoenix gear → church save → lobby → repeat. Starts on execution; no config needed.",
-    })
-
-    tab:CreateSection("Run Settings")
-    tab:CreateSlider({
-        Name = "Chest Laps",
-        Range = { 1, 10 },
-        Increment = 1,
-        CurrentValue = CoreFarm.rescans,
-        Flag = "dtec_core_rescan",
-        Callback = function(value)
-            CoreFarm.rescans = math.clamp(math.floor(tonumber(value) or 2), 1, 10)
-            S.coreMenuRefresh()
-        end,
-    })
-    tab:CreateDropdown({
-        Name = "Chest Types",
-        Options = CHEST_TYPE_OPTIONS,
-        CurrentOption = S.chestLabelsFromSaved(CoreFarm.chestTypes),
-        MultipleOptions = true,
-        Flag = "dtec_core_chest_types",
-        Callback = function(options)
-            local picked = S.chestSelectionList(options)
-            if #picked == 0 then return end
-            CoreFarm.chestTypes, CoreFarm._chestPick = picked, picked
-            if CoreFarm.openAll or CoreFarm._ownedRun then
-                Autofarm.chestTypes, Autofarm.openChests = picked, true
-            end
-        end,
-    })
-    tab:CreateParagraph({ Title = "Loot rules", Content = "Shards stay in the hotbar. King's/Phoenix gear is kept and equipped. Other loot is ignored." })
-
-    tab:CreateSection("Recovery")
-    tab:CreateButton({ Name = "Confirm Church Teleport", Callback = function() S.coreConfirmChurchNow(true) end })
-    tab:CreateButton({ Name = "Copy Debug", Callback = S.coreCopyDebug })
-    tab:CreateParagraph({ Title = "Church", Content = "Confirmation is automatic. The button retries the open save menu if needed." })
-
-    tab:CreateSection("Menu")
-    tab:CreateToggle({
-        Name = "Anti-AFK",
-        CurrentValue = true,
-        Flag = "klze_autofarm_anti_afk",
-        Callback = function(value)
-            if S._configLoading then return end
-            if S._klzeHub then pcall(S._klzeHub.setAntiAfk, value == true) end
-        end,
-    })
-    tab:CreateToggle({
-        Name = "Show Debug Overlay",
-        CurrentValue = false,
-        Flag = "klze_autofarm_debug_overlay",
-        Callback = function(value)
-            Autofarm.debugHud = value == true
-            if Autofarm.debugHud then pcall(S.refreshFarmDebugHud)
-            else pcall(S.destroyFarmDebugHud) end
-        end,
-    })
-    tab:CreateParagraph({ Title = "Right Control", Content = "Show or hide this menu." })
-    tab:CreateButton({ Name = "Unload Script", Callback = function()
-        local library = S._klzeLibrary
-        if library and library.Unload then library:Unload()
-        else S.unloadKlzeDtec() end
-    end })
-    S.coreMenuRefresh()
+function S.buildAutofarmTab()
+    local ui = S._farmUi
+    ui:mount()
+    -- Keep the existing status/progress setters compatible with the farm engine.
+    CoreFarm._statusLabel = { Set = function() ui:refresh() end }
+    CoreFarm._menuLabels, CoreFarm._menuValues = nil, nil
+    ui:refresh()
 end
 
 function S.buildScrapTab(Window)
@@ -26656,19 +27081,14 @@ end
 function S.buildUI()
     S._configLoading = true
     Autofarm.depthHudVisible, Autofarm.debugHud = false, false
-    pcall(S.destroyDepthGui)
-    pcall(S.destroyFarmDebugHud)
-    local Window = Rayfield:CreateWindow({})
-    local ok, err = pcall(S.buildAutofarmTab, Window)
+    pcall(S.destroyDepthGui); pcall(S.destroyFarmDebugHud)
+    local ok, err = pcall(S.buildAutofarmTab)
     S._configLoading = false
     if not ok then error(err) end
-    local library = S._klzeLibrary
-    if library then library.ToggleKeybind = Enum.KeyCode.RightControl end
-    if S._klzeTheme then pcall(function() S._klzeTheme:ApplyTheme("Mint") end) end
     if S._klzeHub then pcall(S._klzeHub.setAntiAfk, true) end
     pcall(S.setFullbright, true)
     S._uiReady = true
-    S.hubLog("Autofarm menu ready")
+    S.hubLog("Core Farm dashboard ready")
     S.coreBootAutoload()
 end
 
