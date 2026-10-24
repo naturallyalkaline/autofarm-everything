@@ -1,5 +1,5 @@
 --[[
-    naturally alkaline · v2.0.1
+    naturally alkaline · v2.0.2
     Autofarm: chests → shards / gear → church → lobby.
 ]]
 if typeof(getgenv) == "function" then
@@ -16,7 +16,7 @@ end
 local NA = {
     placeId = 74507545904779,
     game = "Drill to Earth's Core",
-    version = "2.0.1",
+    version = "2.0.2",
 }
 
 local Players = game:GetService("Players")
@@ -490,15 +490,17 @@ function S.createFarmUi()
         ui.toastText = text("ToastText", ui.toast, 12, 5, 326, 40, "", 11)
         ui.toastText.TextWrapped = true
         local chosen, rows = {}, {}
-        for _, label in ipairs(S.chestSelectionList(CoreFarm.chestTypes)) do chosen[label] = true end
+        for _, label in ipairs(S.chestLabelsFromSaved(S.chestSelectionList(CoreFarm.chestTypes))) do chosen[label] = true end
         local types = flag("dtec_core_chest_types", {})
         ui.scrim = button("DismissChestTypes", main, 0, 0, W, H, "")
         ui.scrim.BackgroundTransparency, ui.scrim.ZIndex, ui.scrim.Visible = 1, 40, false
         ui.popup = box("ChestTypePicker", main, 226, 131, 222, 222, C.panel, 5)
         ui.popup.ZIndex, ui.popup.Visible = 50, false
         stroke(ui.popup)
+        local allTypes = button("SelectAllChests", ui.popup, 6, 6, 200, 24, "Select all")
+        allTypes.ZIndex = 52
         local scroll = create("ScrollingFrame", "ChestTypeOptions", ui.popup, {
-            Position = UDim2.fromOffset(6, 6), Size = UDim2.new(1, -12, 1, -12), BackgroundTransparency = 1,
+            Position = UDim2.fromOffset(6, 36), Size = UDim2.new(1, -12, 1, -42), BackgroundTransparency = 1,
             BorderSizePixel = 0, ScrollBarThickness = 3, ScrollBarImageColor3 = C.muted,
             CanvasSize = UDim2.fromOffset(0, #CHEST_TYPE_OPTIONS * 29), ZIndex = 51 })
         local function paintTypes()
@@ -525,6 +527,10 @@ function S.createFarmUi()
             end)
         end
         paintTypes()
+        connect(allTypes.Activated, function()
+            for _, label in ipairs(CHEST_TYPE_OPTIONS) do chosen[label] = true end
+            paintTypes()
+        end)
         connect(ui.typesButton.Activated, function() ui.popup.Visible = not ui.popup.Visible; ui.scrim.Visible = ui.popup.Visible end)
         connect(ui.scrim.Activated, function() ui.popup.Visible, ui.scrim.Visible = false, false end)
         local function fit()
@@ -937,23 +943,13 @@ function S.normalizeLootCategory(cat)
 end
 
 function S.itemCategoryKey(item)
-    if not item then
-        return ""
-    end
+    if not item then return "" end
     local rarity = item:GetAttribute("Rarity")
-    local fields = {
-        item:GetAttribute("DisplayCategory"),
-        item:GetAttribute("Category"),
-        item:GetAttribute("Class"),
-        item:GetAttribute("ItemType"),
-        item:GetAttribute("Type"),
-    }
-    for _, raw in ipairs(fields) do
+    for _, field in ipairs({"DisplayCategory", "Category", "Class", "ItemType", "Type"}) do
+        local raw = item:GetAttribute(field)
         if raw ~= nil and tostring(raw) ~= "" then
-            local stripped = S.normalizeLootCategory(S.stripRarityPrefix(raw, rarity))
-            if stripped ~= "" then
-                return stripped
-            end
+            local category = S.normalizeLootCategory(S.stripRarityPrefix(raw, rarity))
+            if category ~= "" then return category end
         end
     end
     return ""
@@ -2045,6 +2041,8 @@ function S.getSwordRank(name)
 end
 
 function S.getArmorMaterialRank(name)
+    local token = S.normalizeGearToken(name)
+    if token:find("goblinking", 1, true) then return 34 end
     return S.tierFromKeys(S.normalizeGearToken(name), ARMOR_TIER_KEYS)
 end
 
@@ -2219,25 +2217,15 @@ function S.bestOwnedToolScore(kind)
 end
 
 function S.getCurrentGearScore(category, worldItem)
-    if category == "Pickaxe" or category == "Sword" then
-        return S.bestOwnedToolScore(category)
-    end
-    if category == "Armor" then
-        local slot = S.getArmorSlotKey(worldItem)
-        local piece = S.getEquippedArmorPiece(slot)
-        local equipped = piece and S.getWorldGearScore(piece) or -1
-        local remembered = GearEquip.slotBest[slot]
-        if remembered and typeof(remembered.score) == "number" then
-            local fresh = piece ~= nil or (tick() - (remembered.at or 0) < 12)
-            if fresh then
-                equipped = math.max(equipped, remembered.score)
-            else
-                GearEquip.slotBest[slot] = nil
-            end
-        end
-        return equipped
-    end
-    return -1
+    if category == "Pickaxe" or category == "Sword" then return S.bestOwnedToolScore(category) end
+    if category ~= "Armor" then return -1 end
+    local slot = S.getArmorSlotKey(worldItem)
+    local piece = S.getEquippedArmorPiece(slot)
+    local score = piece and S.getWorldGearScore(piece) or -1
+    local confirmed = S._confirmedArmor and S._confirmedArmor[slot]
+    if confirmed and confirmed.character == LocalPlayer.Character and confirmed.generation == CoreFarm._finishGen
+        and os.clock() - confirmed.at < 3 then score = math.max(score, confirmed.score) end
+    return score
 end
 
 function S.isDecorativeOrShopChest(inst)
@@ -3974,6 +3962,8 @@ function S.coreLoadQueue()
     CoreFarm.joinDungeon, CoreFarm.joinMines = false, false
     CoreFarm.chestTypes = {}
     for _, label in ipairs(CHEST_TYPE_OPTIONS) do CoreFarm.chestTypes[#CoreFarm.chestTypes + 1] = label end
+    CoreFarm._chestPick = S.chestLabelsFromSaved(CoreFarm.chestTypes)
+    S.trySetControlsFlag("dtec_core_chest_types", CoreFarm._chestPick)
     CoreFarm._userStop = false
 end
 
@@ -4222,12 +4212,12 @@ function S.coreRefreshChestPick()
     local flags = Controls and Controls.Flags
     local types = flags and flags.dtec_core_chest_types
     local raw = types and ((types._value and types._value.Value) or types.CurrentValue)
-    local picked = S.chestSelectionList(raw)
+    local picked = S.chestLabelsFromSaved(S.chestSelectionList(raw))
     if #picked == 0 then
-        picked = S.chestSelectionList(CoreFarm._chestPick)
+        picked = S.chestLabelsFromSaved(S.chestSelectionList(CoreFarm._chestPick))
     end
     if #picked == 0 then
-        picked = S.chestSelectionList(CoreFarm.chestTypes)
+        picked = S.chestLabelsFromSaved(S.chestSelectionList(CoreFarm.chestTypes))
     end
     if #picked > 0 then
         CoreFarm._chestPick = picked
@@ -4510,6 +4500,7 @@ function S.coreApplyRun()
     CoreFarm._finishGen = (CoreFarm._finishGen or 0) + 1
     CoreFarm._keptCount, CoreFarm._missedCount = 0, 0
     CoreFarm._drainingChests, CoreFarm._chestQuietSince, CoreFarm._chestSummary = false, nil, nil
+    S._confirmedArmor = {}
     S._knownFarmChests, S._farmChestInstances = {}, setmetatable({}, {__mode = "k"})
     S.ensureChestIndex()
     CoreFarm._startStage = "loot tracker"
@@ -4688,9 +4679,13 @@ end
 function S.hotbarToolGroup(tool)
     if S.isPickaxeWorldItem(tool) then return "Pickaxe" end
     if S.isSwordWorldItem(tool) then return "Sword" end
-    local token = S.normalizeGearToken(S.coreChurchText(tool))
+    local token = S.normalizeGearToken(S.coreLootIdentity(tool))
+    local category = S.itemCategoryKey(tool)
     if token:find("rifle", 1, true) or token:find("shotgun", 1, true) or token:find("revolver", 1, true)
-        or tool:GetAttribute("Ammo") ~= nil then return "Weapon" end
+        or token:find("blackhole", 1, true) or category:find("weapon", 1, true)
+        or category == "gun" or tool:GetAttribute("Ammo") ~= nil then return "Weapon" end
+    if S.isArmorWorldItem(tool) then return "Armor" end
+    return "Other"
 end
 
 function S.hotbarToolScore(tool)
@@ -4700,29 +4695,39 @@ function S.hotbarToolScore(tool)
 end
 
 function S.hotbarMayReplace(tool, incoming)
-    if not incoming or (S.isItemBagTool and S.isItemBagTool(tool)) or tool:GetAttribute("QuestItem") or tool:GetAttribute("NoDrop") then return false end
+    if not incoming or S.isItemBagTool(tool) or tool:GetAttribute("QuestItem") or tool:GetAttribute("NoDrop") then return false end
     local oldKind, oldTier = S.coreKeepKind(tool)
     local newKind, newTier = S.coreKeepKind(incoming)
-    local group = S.hotbarToolGroup(tool)
-    return oldKind == "Tool" and newKind == "Tool" and oldTier < 110 and newTier > oldTier
-        and group ~= nil and group == S.hotbarToolGroup(incoming)
+    if oldKind ~= "Tool" or oldTier >= 110 then return false end
+    if newKind == "Shard" then return true end
+    if newKind ~= "Tool" or S.hotbarToolGroup(tool) ~= S.hotbarToolGroup(incoming) then return false end
+    local oldPriority, newPriority = S.coreLootPriority(tool, oldKind, oldTier), S.coreLootPriority(incoming, newKind, newTier)
+    return newPriority > oldPriority or (newPriority == oldPriority and S.hotbarToolScore(incoming) > S.hotbarToolScore(tool))
 end
 
 function S.hotbarDropCandidate(incoming)
     local tools, best, bestScore = S.hotbarTools(), nil, math.huge
     local incomingGroup = S.hotbarToolGroup(incoming)
     local incomingScore = S.hotbarToolScore(incoming)
+    local newKind, newTier = S.coreKeepKind(incoming)
+    local newPriority = S.coreLootPriority(incoming, newKind, newTier)
     local pickaxes = 0
-    for _, tool in ipairs(tools) do if S.isPickaxeWorldItem(tool) then pickaxes = pickaxes + 1 end end
+    for _, tool in ipairs(tools) do if S.isPickaxeWorldItem(tool) then pickaxes += 1 end end
     for _, tool in ipairs(tools) do
         local group, score = S.hotbarToolGroup(tool), S.hotbarToolScore(tool)
+        local kind, tier = S.coreKeepKind(tool)
+        local priority = kind and S.coreLootPriority(tool, kind, tier) or 0
         local canDrop = true
         pcall(function() canDrop = tool.CanBeDropped ~= false end)
-        if canDrop and group and (not S.hotbarProtected(tool) or S.hotbarMayReplace(tool, incoming)) then
-            local isUpgrade = incomingGroup == group and (incomingScore > score or S.hotbarMayReplace(tool, incoming))
-            local valuable = S.coreKeepKind(incoming) ~= nil
-            local sparePickaxe = group ~= "Pickaxe" or pickaxes > 1 or (incomingGroup == "Pickaxe" and isUpgrade)
-            if sparePickaxe and (isUpgrade or valuable) and score < bestScore then best, bestScore = tool, score end
+        if canDrop and (not S.hotbarProtected(tool) or S.hotbarMayReplace(tool, incoming)) then
+            local upgrade = incomingGroup == group and (incomingScore > score or S.hotbarMayReplace(tool, incoming))
+            local sparePickaxe = group ~= "Pickaxe" or pickaxes > 1 or (incomingGroup == "Pickaxe" and upgrade)
+            local candidateScore = priority * 100000000 + math.max(0, score)
+            if sparePickaxe and newPriority > priority and candidateScore < bestScore then
+                best, bestScore = tool, candidateScore
+            elseif sparePickaxe and upgrade and newPriority == priority and candidateScore < bestScore then
+                best, bestScore = tool, candidateScore
+            end
         end
     end
     return best
@@ -4876,23 +4881,153 @@ function S.coreStatusCaption(value)
     return value
 end
 
+function S.coreLootIdentity(item)
+    local parts = {tostring(item.Name or "")}
+    for _, attr in ipairs({"DisplayName", "ItemId", "ArmorName", "Material", "ArmorMaterial", "ArmorSet"}) do
+        local value = item:GetAttribute(attr)
+        if type(value) == "string" then parts[#parts + 1] = value end
+    end
+    return table.concat(parts, " ")
+end
+
+function S.coreLootValue(item)
+    for _, attribute in ipairs({"SellValue", "SellPrice", "CoinValue", "Value", "Worth", "Price"}) do
+        local raw = item:GetAttribute(attribute)
+        if type(raw) == "string" then raw = raw:gsub("[,%s$]", "") end
+        local value = tonumber(raw)
+        if value and value == value and value >= 0 and value < math.huge then return value end
+    end
+    return 0
+end
+
+function S.coreLootPriority(item, kind, tier)
+    local name = S.normalizeGearToken(S.coreLootIdentity(item))
+    if kind == "Shard" then
+        local rarity = S.normalizeGearToken(item:GetAttribute("Rarity")) .. name
+        return 10000 + (rarity:find("legendary", 1, true) and 100 or rarity:find("rare", 1, true) and 50 or 0)
+    end
+    if name:find("blackhole", 1, true) then return 9000 end
+    if kind == "Armor" then return 7000 + math.min(120, tier or 0) * 10 end
+    if kind == "Tool" then
+        if tier and tier >= 110 then return 8500 end
+        return 6000 + math.min(100, tier or 0) * 10
+    end
+    return 1000
+end
+
+function S.coreSackCount()
+    local label = S._sackQuantityLabel
+    if not label or not label.Parent then
+        local gui = LocalPlayer:FindFirstChild("PlayerGui")
+        local sack = gui and gui:FindFirstChild("SackUI", true)
+        label = sack and sack:FindFirstChild("Quantity", true)
+        S._sackQuantityLabel = label
+    end
+    if not label or not (label:IsA("TextLabel") or label:IsA("TextButton")) then return nil, nil end
+    local current, capacity = tostring(label.Text or ""):match("(%d+)%s*/%s*(%d+)")
+    return tonumber(current), tonumber(capacity)
+end
+
+function S.coreSackValuable(item, gen)
+    if not S.coreFinishActive(gen) or not item.Parent or not Services.ToolService then return false end
+    local character = LocalPlayer.Character
+    local function active() return S.coreFinishActive(gen) and LocalPlayer.Character == character end
+    local before, capacity = S.coreSackCount()
+    if before == nil or (capacity and before >= capacity) then return false end
+    local bag
+    for _, container in ipairs({LocalPlayer.Character, LocalPlayer:FindFirstChildOfClass("Backpack")}) do
+        if container then
+            for _, tool in ipairs(container:GetChildren()) do
+                if S.isItemBagTool(tool) then bag = tool; break end
+            end
+        end
+        if bag then break end
+    end
+    if not bag then return false end
+    local ok, promise = pcall(function() return Services.ToolService:EquipTool(bag) end)
+    if not ok then return false end
+    S.coreFinishAwait(promise, 1, gen)
+    local deadline = os.clock() + 0.8
+    while active() and bag.Parent ~= character and os.clock() < deadline do task.wait(0.08) end
+    if not active() or bag.Parent ~= character or not item.Parent then return false end
+    ok = pcall(function() Services.ToolService.Update:Fire({"Pickup", item}) end)
+    if not ok then return false end
+    deadline = os.clock() + 1.2
+    while active() and os.clock() < deadline do
+        local current = S.coreSackCount()
+        if current and current > before then return true end
+        task.wait(0.1)
+    end
+    return false
+end
+
+function S.coreEquipOwnedArmor(gen)
+    local best = {}
+    for _, container in ipairs({LocalPlayer.Character, LocalPlayer:FindFirstChildOfClass("Backpack")}) do
+        if container then
+            for _, tool in ipairs(container:GetChildren()) do
+                if tool:IsA("Tool") and S.isArmorWorldItem(tool) then
+                    local slot, score = S.getArmorSlotKey(tool), S.getWorldGearScore(tool)
+                    if not best[slot] or score > best[slot].score then best[slot] = {item = tool, score = score} end
+                end
+            end
+        end
+    end
+    for slot, entry in pairs(best) do
+        if not S.coreFinishActive(gen) then return end
+        if Services.ToolService and entry.score > S.getCurrentGearScore("Armor", entry.item) then
+            local ok, promise = pcall(function() return Services.ToolService:EquipTool(entry.item) end)
+            if ok then S.coreFinishAwait(promise, 1.2, gen) end
+            local deadline = os.clock() + 1.2
+            while ok and S.coreFinishActive(gen) and os.clock() < deadline do
+                local equipped = S.getEquippedArmorPiece(slot)
+                if equipped and S.getWorldGearScore(equipped) >= entry.score then
+                    S._confirmedArmor = S._confirmedArmor or {}
+                    S._confirmedArmor[slot] = {score = S.getWorldGearScore(equipped), character = LocalPlayer.Character,
+                        generation = CoreFarm._finishGen, at = os.clock()}
+                    break
+                end
+                task.wait(0.1)
+            end
+        end
+    end
+end
+
 function S.coreKeepKind(item)
     if not item then return nil end
-    local name = S.normalizeGearToken(item.Name .. " " .. tostring(item:GetAttribute("DisplayName") or "")
-        .. " " .. tostring(item:GetAttribute("ItemId") or "") .. " " .. tostring(item:GetAttribute("ArmorName") or ""))
+    local label = S.coreLootIdentity(item)
+    local name = S.normalizeGearToken(label .. " " .. tostring(item:GetAttribute("ItemId") or ""))
     if name:find("shard", 1, true) then return "Shard", 0 end
-    local tier = 0
+    local category = S.itemCategoryKey(item)
+    local class = S.normalizeGearToken(item:GetAttribute("Class"))
+    if category == "ammo" or category == "ammunition" or class == "ammo" or class == "ammunition"
+        or name:find("ammunition", 1, true) or name:find("bullets", 1, true)
+        or name:find("shotgunammo", 1, true) or name:find("rifleammo", 1, true) then return nil end
     local rarity = S.normalizeGearToken(item:GetAttribute("Rarity"))
+    local tier = 0
     if name:find("blackhole", 1, true) or name:find("mythic", 1, true) or rarity:find("mythic", 1, true) then tier = 110 end
     if name:find("phoenix", 1, true) then tier = math.max(tier, 90) end
     if name:find("king", 1, true) and not name:find("goblin", 1, true) then tier = math.max(tier, 100) end
-    if tier == 0 then return nil end
-    if S.isArmorWorldItem(item) then return "Armor", tier end
-    local category = S.itemCategoryKey(item)
-    if item:IsA("Tool") or S.isPickaxeWorldItem(item) or S.isSwordWorldItem(item)
-        or category:find("weapon", 1, true) or category == "tool"
+    if name:find("void", 1, true) then tier = math.max(tier, 80) end
+    if rarity:find("legendary", 1, true) or name:find("legendary", 1, true) then tier = math.max(tier, 95)
+    elseif rarity == "epic" then tier = math.max(tier, 80) end
+    local value = S.coreLootValue(item)
+    if S.isArmorWorldItem(item) then
+        local material = S.getArmorMaterialRank(label)
+        tier = math.max(tier, material)
+        if tier >= 80 or value >= 1000 then return "Armor", tier end
+        return nil
+    end
+    local tool = item:IsA("Tool") or S.isPickaxeWorldItem(item) or S.isSwordWorldItem(item)
+        or category:find("weapon", 1, true) or category == "tool" or category == "gun" or category == "consumable"
         or name:find("rifle", 1, true) or name:find("shotgun", 1, true)
-        or name:find("revolver", 1, true) or name:find("blackhole", 1, true) then return "Tool", tier end
+        or name:find("revolver", 1, true) or name:find("blackhole", 1, true)
+    if tool then
+        tier = math.max(tier, S.getPickaxeRank(label), S.getSwordRank(label))
+        if tier >= 80 or value >= 1000 then return "Tool", tier end
+        return nil
+    end
+    if value >= 1000 then return "Valuable", 0 end
     return nil
 end
 
@@ -4937,7 +5072,7 @@ function S.coreRecordLoot(item)
     local pos = S.getItemPosition(item)
     if pos then
         CoreFarm._lootSeen[item] = { item = item, name = item.Name, keys = S.coreItemKeys(item),
-            kind = kind, tier = tier, pos = pos }
+            kind = kind, tier = tier, pos = pos, value = S.coreLootValue(item) }
     end
 end
 
@@ -5127,24 +5262,40 @@ function S.coreResolveKeptItem(entry, gen)
 end
 
 function S.coreCollectKeptItem(entry, gen)
+    if entry.kind == "Armor" and S.getCurrentGearScore("Armor", entry.item) >= S.getWorldGearScore(entry.item) then
+        return true, "covered"
+    end
+    if entry.kind == "Valuable" then
+        local current, capacity = S.coreSackCount()
+        if current and capacity and current >= capacity then return false, "capacity" end
+    end
     local item = S.coreResolveKeptItem(entry, gen)
     if not item or not Services.InteractionService or S.isHardExcluded(item) then return false end
     local before = S.coreOwnedCount(entry.keys)
     local slot = entry.kind == "Armor" and S.getArmorSlotKey(item) or nil
     local score = slot and S.getWorldGearScore(item) or nil
-    if slot and S.getCurrentGearScore("Armor", item) >= score then return true end
+    if slot and S.getCurrentGearScore("Armor", item) >= score then return true, "covered" end
+    local bagBefore = entry.kind == "Valuable" and S.coreSackCount() or nil
     local function collected()
         if slot then
             local piece = S.getEquippedArmorPiece(slot)
-            return piece ~= nil and S.getWorldGearScore(piece) >= score
+            local confirmed = piece ~= nil and S.getWorldGearScore(piece) >= score
+            if confirmed then
+                S._confirmedArmor = S._confirmedArmor or {}
+                S._confirmedArmor[slot] = {score = S.getWorldGearScore(piece), character = LocalPlayer.Character,
+                    generation = CoreFarm._finishGen, at = os.clock()}
+            end
+            return confirmed
         end
         
-        return S.coreOwnedCount(entry.keys) > before
+        if S.coreOwnedCount(entry.keys) > before then return true end
+        local current = entry.kind == "Valuable" and S.coreSackCount() or nil
+        return bagBefore ~= nil and current ~= nil and current > bagBefore
     end
     local roomTried = false
     for attempt = 1, 2 do
         if not S.coreFinishActive(gen) then return false end
-        if attempt == 2 and not slot and not collected() and (#S.hotbarTools() >= S.hotbarLimit() or S.hotbarFullHint()) and not roomTried then
+        if attempt == 2 and entry.kind ~= "Valuable" and not slot and not collected() and (#S.hotbarTools() >= S.hotbarLimit() or S.hotbarFullHint()) and not roomTried then
             roomTried = true
             if S._finishSettings.freeSlots == false or not S.hotbarMakeRoom(entry, gen, true) then return false end
         end
@@ -5154,6 +5305,11 @@ function S.coreCollectKeptItem(entry, gen)
         if not S.coreStandNear(pos, gen) then return false end
         S.requestStreamAround(pos, 0.5)
         task.wait(0.15)
+        if not S.coreFinishActive(gen) then return false end
+        if entry.kind == "Valuable" and attempt == 2 and S.coreSackValuable(item, gen) then
+            S.clearDragTarget()
+            return true
+        end
         if not S.coreFinishActive(gen) then return false end
         S.setDragTarget(item)
         local ok, promise = pcall(function() return Services.InteractionService:Interact(item) end)
@@ -5172,45 +5328,75 @@ function S.coreCollectKeptItem(entry, gen)
 end
 
 function S.coreCollectKeptLoot(gen)
-    task.wait(0.35) 
+    task.wait(0.35)
     if not S.coreFinishActive(gen) then return end
-    S.coreSnapshotLoot()
-    local list = {}
-    for _, entry in pairs(CoreFarm._lootSeen or {}) do list[#list + 1] = entry end
-    table.sort(list, function(a, b)
-        if a.kind ~= b.kind then
-            if a.kind == "Shard" then return true end
-            if b.kind == "Shard" then return false end
-        end
-        if S._finishSettings.legendaryFirst and a.kind == "Shard" and b.kind == "Shard" then
-            local function priority(entry)
-                local token = S.normalizeGearToken(entry.name .. tostring(entry.item:GetAttribute("Rarity") or ""))
-                return token:find("legendary", 1, true) and 100 or token:find("rare", 1, true) and 50 or 0
+    local outcomes, armorChecked = {}, false
+    local function pass(shardsOnly)
+        S.coreSnapshotLoot()
+        local list = {}
+        for _, entry in pairs(CoreFarm._lootSeen or {}) do
+            local state = outcomes[entry] or {tries = 0}
+            outcomes[entry] = state
+            if not state.collected and not state.covered and not state.capacity and state.tries < 2 and (not shardsOnly or entry.kind == "Shard") then
+                list[#list + 1] = entry
             end
-            if priority(a) ~= priority(b) then return priority(a) > priority(b) end
         end
-        if a.tier ~= b.tier then return a.tier > b.tier end
-        return a.name < b.name
-    end)
-    local collected, missed = 0, 0
-    for _, entry in ipairs(list) do
-        if not S.coreFinishActive(gen) then return end
-        local ok, kept = pcall(S.coreCollectKeptItem, entry, gen)
-        if ok and kept then collected = collected + 1 else missed = missed + 1 end
-        task.wait(0.12) 
+        table.sort(list, function(a, b)
+            local ap, bp = S.coreLootPriority(a.item, a.kind, a.tier), S.coreLootPriority(b.item, b.kind, b.tier)
+            if ap ~= bp then return ap > bp end
+            if a.kind == "Armor" and b.kind == "Armor" then
+                local as, bs = S.getWorldGearScore(a.item), S.getWorldGearScore(b.item)
+                if as ~= bs then return as > bs end
+            end
+            local av, bv = S.coreLootValue(a.item), S.coreLootValue(b.item)
+            if av ~= bv then return av > bv end
+            return a.name < b.name
+        end)
+        for _, entry in ipairs(list) do
+            if not S.coreFinishActive(gen) then return end
+            if entry.kind == "Armor" and not armorChecked then
+                S.coreEquipOwnedArmor(gen)
+                armorChecked = true
+            end
+            local state = outcomes[entry]
+            state.tries += 1
+            local ok, kept, reason = pcall(S.coreCollectKeptItem, entry, gen)
+            state.covered = ok and reason == "covered"
+            state.capacity = ok and reason == "capacity"
+            state.collected = ok and kept == true and not state.covered
+            task.wait((state.covered or state.capacity) and 0.01 or 0.12)
+        end
     end
-    CoreFarm._keptCount, CoreFarm._missedCount = collected, missed
+    -- Two shard sweeps happen before equipment or sack valuables can take space.
+    pass(true)
+    if not S.coreFinishActive(gen) then return end
+    task.wait(0.3)
+    pass(true)
+    if not S.coreFinishActive(gen) then return end
+    pass(false)
+    if not S.coreFinishActive(gen) then return end
+    task.wait(0.25)
+    pass(false) -- catches delayed drops and gives failed equipment one final retry
+    local collected, missed, covered = 0, 0, 0
+    for _, state in pairs(outcomes) do
+        if state.collected then collected += 1
+        elseif state.covered then covered += 1
+        elseif state.tries > 0 then missed += 1 end
+    end
+    CoreFarm._keptCount, CoreFarm._missedCount, CoreFarm._coveredCount = collected, missed, covered
     if missed > 0 then S.notify("Core", missed .. " selected drops could not be confirmed in inventory.", 6) end
 end
 
 function S.coreEquipKeptTools(gen)
     if S._finishSettings.equip == false then return end
+    S.coreEquipOwnedArmor(gen)
+    if not S.coreFinishActive(gen) then return end
     local tools, seen = {}, {}
     local function scan(container)
         if not container then return end
         for _, item in ipairs(container:GetChildren()) do
             local kind = S.coreKeepKind(item)
-            if item:IsA("Tool") and (kind == "Shard" or kind == "Tool") and not seen[item] then
+            if item:IsA("Tool") and (kind == "Shard" or kind == "Tool" or S.isPickaxeTool(item)) and not seen[item] then
                 seen[item] = true
                 tools[#tools + 1] = item
             end
@@ -6105,4 +6291,5 @@ function S.setAntiAfk(enabled)
         end)
     end)
 end
+
 
