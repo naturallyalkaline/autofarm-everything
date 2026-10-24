@@ -1,5 +1,5 @@
 --[[
-    naturally alkaline · v2.0.0
+    naturally alkaline · v2.0.1
     Autofarm: chests → shards / gear → church → lobby.
 ]]
 if typeof(getgenv) == "function" then
@@ -16,7 +16,7 @@ end
 local NA = {
     placeId = 74507545904779,
     game = "Drill to Earth's Core",
-    version = "2.0.0",
+    version = "2.0.1",
 }
 
 local Players = game:GetService("Players")
@@ -474,7 +474,9 @@ function S.createFarmUi()
         connect(save.Activated, S.coreSaveReturnNow)
         connect(retry.Activated, S.coreRetryChurchReturn)
         box("FooterRule", main, 0, 381, W, 1, C.border)
-        text("Shortcut", main, 20, 390, 180, 20, "Right Ctrl · show / hide", 10, C.muted)
+        text("Shortcut", main, 20, 390, 140, 20, "Right Ctrl · menu", 10, C.muted)
+        local retryChests = button("RetryChests", main, 169, 388, 98, 24, "Retry chests")
+        connect(retryChests.Activated, S.coreRetryMissedChests)
         local log = button("CopyLog", main, 278, 388, 82, 24, "Copy log")
         local unload = button("UnloadScript", main, 371, 388, 77, 24, "Unload")
         connect(log.Activated, S.coreCopyDebug)
@@ -1610,65 +1612,298 @@ function S.restorePromptsAfterHold(backup)
     end
 end
 
-function S.holdChestInteract(instance, seconds)
-    if not instance or not instance.Parent or S._chestInteraction or S._unloaded then return false end
-    if S.coreStorageObject(instance) then return false end
-    local root, character = S.getRoot(), LocalPlayer.Character
-    if not root then return false end
-    local prompts, prompt = S.collectProximityPrompts(instance), nil
-    local best = math.huge
-    for _, candidate in ipairs(prompts) do
-        local pos = S.getPromptWorldPosition(candidate)
-        local distance = pos and (root.Position - pos).Magnitude or math.huge
-        if candidate.Enabled and distance <= (tonumber(candidate.MaxActivationDistance) or 10) and distance < best then
-            best, prompt = distance, candidate
+function S.chestInteractionActive(context)
+    return context ~= nil and not S._unloaded and not S._unloading
+        and S._chestInteraction == context and LocalPlayer.Character == context.character
+        and S.getRoot() == context.root and context.root.Parent ~= nil
+        and (not context.farm or (Autofarm.enabled and Autofarm._cycleGen == context.cycle))
+        and not CoreFarm._userStop and not CoreFarm._leaving
+end
+
+function S.chestPrompt(chest)
+    local best, score = nil, -math.huge
+    for _, prompt in ipairs(S.collectProximityPrompts(chest)) do
+        local action = string.lower(prompt.ActionText or "")
+        if prompt.Enabled and not action:find("buy", 1, true) and not action:find("purchase", 1, true)
+            and not action:find("equip", 1, true) and not S.chestTextLocked(action) then
+            local pos = S.getPromptWorldPosition(prompt)
+            local root = S.getRoot()
+            local range = tonumber(prompt.MaxActivationDistance) or 10
+            if pos and range > 0 then
+                local value = (action:find("open", 1, true) and 100 or action == "interact" and 80 or 10)
+                    - (root and (root.Position - pos).Magnitude or 0) * 0.001
+                if value > score then best, score = prompt, value end
+            end
         end
     end
-    if not prompt then S.interactionNote("chest", "No enabled prompt within range"); return false end
-    local token = { character = character, root = root, cycle = Autofarm._cycleGen, farm = Autofarm.enabled }
-    S._chestInteraction = token
-    local function active()
-        return not S._unloaded and S._chestInteraction == token and LocalPlayer.Character == character
-            and S.getRoot() == root and (not token.farm or (Autofarm.enabled and token.cycle == Autofarm._cycleGen))
-            and not (type(CoreFarm) == "table" and CoreFarm._leaving)
-    end
-    local backup, camera, method, complete = S.preparePromptsForHold({ prompt }), nil, nil, false
-    local coresBefore = tonumber(LocalPlayer:GetAttribute("Cores")) or 0
-    local hold = math.max(tonumber(seconds) or 0, tonumber(prompt.HoldDuration) or 0) + 0.35
-    local ok, err = pcall(function()
-        local pos = S.getPromptWorldPosition(prompt)
-        if pos then S.faceCharacterToward(pos); camera = S.aimCameraAtWorld(pos, nil) end
-        task.wait(0.12)
-        if not active() then return end
+    return best
+end
 
-        if pcall(function() prompt:InputHoldBegin() end) then method = "prompt"
-        elseif S.sendNativeKey(prompt.KeyboardKeyCode or Enum.KeyCode.E, true) then method = "key"
+function S.pinChestInteraction(context, prompt)
+    if not S.chestInteractionActive(context) or not prompt or not prompt.Parent then return false end
+    local pos = S.getPromptWorldPosition(prompt)
+    local range = tonumber(prompt.MaxActivationDistance) or 10
+    if not pos or range <= 0 then return false end
+    local drop = math.min(tonumber(Autofarm.chestUnderDepth) or 11, range * 0.35)
+    local side = math.min(1.5, range * 0.15) * ((context.attempt or 1) % 2 == 0 and -1 or 1)
+    local stand = pos + Vector3.new(0, -drop, side)
+    local root = context.root
+    Autofarm._mineHoldPos, Autofarm._mineLookAt, Autofarm._gatePinY = stand, pos, stand.Y
+    root.Anchored = false
+    root.CFrame = CFrame.new(stand)
+    root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
+    S.setAutofarmPlatformStand(true)
+    S.faceCharacterToward(pos)
+    context.camera = S.aimCameraAtWorld(pos, context.camera)
+    return (root.Position - pos).Magnitude <= range
+end
+
+function S.chestInteractionTarget(chest, prompt, attempt)
+    if (attempt or 1) % 2 == 0 then return chest end
+    local node = prompt and prompt.Parent
+    while node and node ~= chest.Parent do
+        if CollectionService:HasTag(node, "Interactive") then return node end
+        if node == chest then break end
+        node = node.Parent
+    end
+    -- Both targets are used by the game's existing InteractionService path.
+    return chest:FindFirstChild("Chest", true) or (prompt and prompt.Parent) or chest
+end
+
+function S.chestServerInteract(context, prompt)
+    if not S.chestInteractionActive(context) or not context.chest.Parent or not Services.InteractionService then return false end
+    if not S.pinChestInteraction(context, prompt) then return false end
+    local target = S.chestInteractionTarget(context.chest, prompt, context.attempt)
+    if not target or not target.Parent then return false end
+    S.setDragTarget(target)
+    local ok, promise = pcall(function() return Services.InteractionService:Interact(target) end)
+    if not ok then
+        S.interactionNote("chest request", tostring(promise):sub(1, 120))
+        return false
+    end
+    -- Dispatching a promise is not opening the chest. Reward/state confirmation
+    -- is checked separately, including after this promise resolves.
+    if type(promise) == "table" and type(promise.catch) == "function" then
+        pcall(function() promise:catch(function(err)
+            if S.chestInteractionActive(context) then
+                S.interactionNote("chest server", tostring(err):sub(1, 100))
+            end
+        end) end)
+    end
+    return true
+end
+
+function S.chestTextLocked(text)
+    local lower = string.lower(tostring(text or ""))
+    -- "Unlocked" and "unlocked chest" are positive states, not lock notices.
+    lower = lower:gsub("unlocked", "")
+    return lower:match("%f[%a]locked%f[%A]") ~= nil
+        or lower:match("%f[%a]padlocked%f[%A]") ~= nil
+        or lower:find("requires key", 1, true) ~= nil
+        or lower:find("requires a key", 1, true) ~= nil
+        or lower:find("need a key", 1, true) ~= nil
+        or lower:find("key required", 1, true) ~= nil
+end
+
+function S.chestProgress()
+    local result = { opened = 0, pending = 0, locked = 0, blocked = 0, waiting = 0, unloaded = 0 }
+    S.forEachWorldChestNode(function(chest) S.rememberFarmChest(chest) end)
+    for _, entry in pairs(S._knownFarmChests or {}) do
+        local chest = entry.chest
+        if not S.chestMatchesAutofarmWhitelist(chest) then continue end
+        local record = S.chestAttemptRecord(chest)
+        if entry.done or record.done or S.chestOpened(chest) then
+            record.done, entry.done = true, true
+            result.opened += 1
+        elseif (chest.Parent and S.chestLockStatus(chest)) or (not chest.Parent and entry.locked) then
+            entry.locked = true
+            result.locked += 1
+        else
+            entry.locked = false
+            result.pending += 1
+            if not chest.Parent then result.unloaded += 1 end
+            if record.blocked or entry.blocked then result.blocked += 1
+            elseif os.clock() < (record.retryAt or 0) then result.waiting += 1 end
+        end
+    end
+    return result
+end
+
+function S.rememberFarmChest(chest)
+    if not chest or not chest.Parent or S.coreStorageObject(chest) or S.isDecorativeOrShopChest(chest)
+        or CollectionService:HasTag(chest, "ShopItem") or CollectionService:HasTag(chest, "SupplyCrate") then return nil end
+    S._knownFarmChests, S._farmChestInstances = S._knownFarmChests or {}, S._farmChestInstances or setmetatable({}, {__mode = "k"})
+    if S._farmChestInstances[chest] then return S._farmChestInstances[chest] end
+    local pos = S.getInstancePosition(chest)
+    if not pos or pos.X ~= pos.X or pos.Y ~= pos.Y or pos.Z ~= pos.Z
+        or math.abs(pos.X) == math.huge or math.abs(pos.Y) == math.huge or math.abs(pos.Z) == math.huge then return nil end
+    local key = chest.Name .. string.format(":%.0f:%.0f:%.0f", pos.X * 2, pos.Y * 2, pos.Z * 2)
+    local entry = S._knownFarmChests[key] or {position = pos, name = chest.Name}
+    entry.chest = chest
+    entry.blocked, entry.streamTries = false, 0
+    S._knownFarmChests[key], S._farmChestInstances[chest] = entry, entry
+    if entry.done then S.chestAttemptRecord(chest).done = true end
+    return entry
+end
+
+function S.restreamPendingChest()
+    if os.clock() < (CoreFarm._nextChestStream or 0) then return end
+    CoreFarm._nextChestStream = os.clock() + 2
+    for _, entry in pairs(S._knownFarmChests or {}) do
+        if not entry.done and not entry.locked and not entry.chest.Parent and not entry.blocked
+            and S.chestMatchesAutofarmWhitelist(entry.chest) then
+            entry.streamTries = (entry.streamTries or 0) + 1
+            if entry.streamTries > 3 then
+                entry.blocked = true
+                S.interactionNote("chest streaming", entry.name .. ": not loaded; Retry chests to retry")
+            else
+                S.coreSetStatus("Reloading missed chest · " .. entry.name)
+                pcall(S.requestStreamAround, entry.position, 1.2)
+            end
+            return
+        end
+    end
+end
+
+function S.coreCompleteChestRun()
+    if CoreFarm._leaving or CoreFarm._userStop or S._unloaded then return end
+    CoreFarm._chestSummary = S.chestProgress()
+    CoreFarm._drainingChests = false
+    CoreFarm._leaving, CoreFarm.openAll, CoreFarm._ownedRun, CoreFarm._runStarted = true, false, false, false
+    CoreFarm._finishGen = (CoreFarm._finishGen or 0) + 1
+    local gen, before = CoreFarm._finishGen, CoreFarm._coresBefore
+    S.disconnectAll("autofarmGlide")
+    S.disconnectAll("autofarm")
+    task.spawn(function()
+        local ok, err = pcall(S.coreFinishRun, before, gen)
+        if not ok and S.coreFinishActive(gen) then
+            S.coreStopLootWatch()
+            S.clearDragTarget()
+            S.notify("Core", "Return paused: " .. tostring(err), 8)
+        end
+    end)
+end
+
+function S.coreDrainChestsTick()
+    if not CoreFarm._drainingChests or CoreFarm._leaving or CoreFarm._userStop or S._chestInteraction then return end
+    local summary = S.chestProgress()
+    CoreFarm._chestSummary = summary
+    local index = S.ensureChestIndex()
+    if summary.pending > 0 then
+        CoreFarm._chestQuietSince = nil
+        local message = summary.blocked == summary.pending
+            and ("Chest retries paused · " .. summary.pending .. " unconfirmed · Retry chests")
+            or ("Finishing chests · " .. summary.pending .. " remaining")
+        CoreFarm._drainStatus = message
+        S.coreSetStatus(message)
+        if summary.unloaded > 0 then S.restreamPendingChest() end
+        return
+    end
+    -- Let the streaming/index queue settle before deciding the two laps are done.
+    if index and (index.running or index.head <= index.tail) then
+        CoreFarm._chestQuietSince = nil
+        S.coreSetStatus("Finishing chest scan")
+        return
+    end
+    CoreFarm._chestQuietSince = CoreFarm._chestQuietSince or os.clock()
+    if os.clock() - CoreFarm._chestQuietSince >= 2 then S.coreCompleteChestRun() end
+end
+
+function S.coreRetryMissedChests()
+    if S._unloaded or S._chestInteraction or CoreFarm._leaving then return false end
+    local reset = 0
+    for chest, record in pairs(S._chestAttempts or {}) do
+        if chest.Parent and not record.done then
+            record.tries, record.retryAt, record.blocked, record.missingPrompt = 0, 0, false, 0
+            reset += 1
+        end
+    end
+    for _, entry in pairs(S._knownFarmChests or {}) do
+        if not entry.done then
+            entry.blocked, entry.streamTries = false, 0
+            local record = S.chestAttemptRecord(entry.chest)
+            if not record.done then record.tries, record.retryAt, record.blocked, record.missingPrompt = 0, 0, false, 0 end
+        end
+    end
+    CoreFarm._chestQuietSince = nil
+    S.interactionNote("chests", reset .. " unconfirmed chest attempts reset")
+    S.coreSetStatus(CoreFarm._drainingChests and "Retrying remaining chests" or "Retrying missed chests")
+    return true
+end
+
+function S.holdChestInteract(instance, seconds, context)
+    if not instance or not instance.Parent or S._unloaded or S.coreStorageObject(instance) then return false end
+    local owns = context == nil
+    if owns then
+        if S._chestInteraction then return false end
+        local root = S.getRoot()
+        if not root then return false end
+        context = { chest = instance, root = root, character = LocalPlayer.Character,
+            cycle = Autofarm._cycleGen, farm = Autofarm.enabled, attempt = 1 }
+        S._chestInteraction = context
+    elseif S._chestInteraction ~= context then return false end
+    local prompt = S.chestPrompt(instance)
+    if not prompt or not S.chestInteractionActive(context) then
+        if owns and S._chestInteraction == context then S._chestInteraction = nil end
+        return false
+    end
+    local focused
+    pcall(function() focused = UserInputService:GetFocusedTextBox() end)
+    if focused then
+        if owns and S._chestInteraction == context then S._chestInteraction = nil end
+        return false
+    end
+    local hold = math.max(tonumber(seconds) or 0, tonumber(prompt.HoldDuration) or 0) + 0.4
+    if hold ~= hold or hold > 180 then
+        if owns and S._chestInteraction == context then S._chestInteraction = nil end
+        return false
+    end
+    local backup, method, complete = S.preparePromptsForHold({prompt}), nil, false
+    context.inputStarted = false
+    local keyAttempted = false
+    local key = prompt.KeyboardKeyCode or Enum.KeyCode.E
+    local function keyDown()
+        keyAttempted = true
+        return S.sendNativeKey(key, true)
+    end
+    local ok, err = pcall(function()
+        if not S.pinChestInteraction(context, prompt) then return end
+        local target = S.chestInteractionTarget(instance, prompt, context.attempt)
+        if target then S.setDragTarget(target) end
+        task.wait(0.2)
+        if not S.chestInteractionActive(context) then return end
+        -- Try native keyboard input first, so the game's own input controller
+        -- gets the complete hold. Later attempts use prompt input as a fallback.
+        if (context.attempt or 1) % 2 == 1 and keyDown() then method = "key"
+        elseif pcall(function() prompt:InputHoldBegin() end) then method = "prompt"
+        elseif keyDown() then method = "key"
         elseif typeof(fireproximityprompt) == "function" then
             method = "executor"
-            if not active() then return end
             fireproximityprompt(prompt, tonumber(prompt.HoldDuration) or 0)
         else return end
+        context.inputStarted = true
         local deadline = os.clock() + hold
-        local nextCheck = 0
-        while active() and os.clock() < deadline do
-            if not prompt.Parent or S.chestOpened(instance, coresBefore) then complete = true; break end
-            if os.clock() >= nextCheck then
-                nextCheck = os.clock() + 0.75
-                if S.playerGuiSaysChestLocked() then S.markChestLocked(instance); return end
-                local target = S.getPromptWorldPosition(prompt)
-                if not target or (root.Position - target).Magnitude > (tonumber(prompt.MaxActivationDistance) or 10) then
-                    S.interactionNote("chest", "Hold cancelled: prompt moved out of range"); return
-                end
+        while S.chestInteractionActive(context) and os.clock() < deadline do
+            if type(context.coresBefore) == "number"
+                and (tonumber(LocalPlayer:GetAttribute("Cores")) or 0) > context.coresBefore then
+                complete = true
+                break
             end
-            task.wait(0.05)
+            if not instance.Parent or not prompt.Parent or not S.pinChestInteraction(context, prompt) then return end
+            task.wait(0.08)
         end
-        complete = complete or (active() and os.clock() >= deadline)
+        complete = complete or (S.chestInteractionActive(context) and os.clock() >= deadline)
     end)
-    if method == "prompt" then pcall(function() prompt:InputHoldEnd() end)
-    elseif method == "key" then S.sendNativeKey(prompt.KeyboardKeyCode or Enum.KeyCode.E, false) end
-    pcall(S.restorePromptsAfterHold, backup); pcall(S.restoreCameraAim, camera)
-    if S._chestInteraction == token then S._chestInteraction = nil end
+    -- Releasing is unconditional, including stops, respawns and input failures.
+    if keyAttempted then pcall(S.sendNativeKey, key, false) end
+    if method == "prompt" then pcall(function() prompt:InputHoldEnd() end) end
+    pcall(S.restorePromptsAfterHold, backup)
+    if owns then
+        pcall(S.restoreCameraAim, context.camera)
+        if S._chestInteraction == context then S._chestInteraction = nil end
+    end
     if not ok then S.interactionNote("chest hold", tostring(err):sub(1, 120)) end
+    -- True means the hold finished; only chestOpened() confirms a reward/open.
     return ok and complete
 end
 
@@ -2139,112 +2374,30 @@ function S.playerGuiSaysChestLocked()
         if not label.Parent then cache.labels[label] = nil
         elseif S.gameGuiVisible(label) then
             local text = string.lower(label.Text or "")
-            if text:find("chest", 1, true) and text:find("locked", 1, true) then cache.locked = true; break end
+            if text:find("chest", 1, true) and S.chestTextLocked(text) then cache.locked = true; break end
         end
     end
     return cache.locked
 end
 
 function S.isChestPadlocked(inst)
-    if not inst then
-        return false
+    if not inst then return false end
+    if S.isChestMarkedLocked(inst) then return true end
+    local function locked(object)
+        if object:GetAttribute("Unlocked") == true or object:GetAttribute("CanOpen") == true
+            or object:GetAttribute("Locked") == false then return false end
+        return object:GetAttribute("Locked") == true or object:GetAttribute("Unlocked") == false
+            or object:GetAttribute("CanOpen") == false or object:GetAttribute("RequiresKey") == true
+            or object:GetAttribute("KeyRequired") == true or object:GetAttribute("NeedsKey") == true
+            or object:GetAttribute("Padlocked") == true or object:GetAttribute("BossLocked") == true
     end
-    if S.isChestMarkedLocked(inst) then
-        return true
-    end
-
-    local function attrLocked(obj)
-        if not obj then
-            return false
-        end
-        if obj:GetAttribute("Locked") == true then
-            return true
-        end
-        if obj:GetAttribute("Unlocked") == false then
-            return true
-        end
-        if obj:GetAttribute("CanOpen") == false or obj:GetAttribute("CanInteract") == false then
-            return true
-        end
-        if obj:GetAttribute("RequiresKey") == true
-            or obj:GetAttribute("KeyRequired") == true
-            or obj:GetAttribute("NeedsKey") == true
-            or obj:GetAttribute("Padlocked") == true
-            or obj:GetAttribute("BossLocked") == true
-        then
-            return true
-        end
-        local keyAttr = obj:GetAttribute("Key") or obj:GetAttribute("RequiredKey") or obj:GetAttribute("UnlockKey")
-        if type(keyAttr) == "string" and keyAttr ~= "" then
-            return true
-        end
-        return false
-    end
-
-    if attrLocked(inst) then
-        return true
-    end
-
-    local function looksLikeLockName(n)
-        n = string.lower(tostring(n or ""))
-        return n == "lock"
-            or n == "padlock"
-            or n:find("padlock", 1, true)
-            or n:find("lockicon", 1, true)
-            or n:find("chestlock", 1, true)
-            or n:find("bosslock", 1, true)
-            or n == "locked"
-            or n:find("keyhole", 1, true)
-            or n:find("keylock", 1, true)
-    end
-
+    if locked(inst) then return true end
     for _, desc in ipairs(inst:GetDescendants()) do
-        if attrLocked(desc) then
-            return true
-        end
-        if desc:IsA("ProximityPrompt") then
-            local action = string.lower(desc.ActionText or "")
-            local object = string.lower(desc.ObjectText or "")
-            if action:find("lock", 1, true)
-                or object:find("lock", 1, true)
-                or action:find("key", 1, true)
-                or object:find("key", 1, true)
-            then
-                return true
-            end
-        end
-        if looksLikeLockName(desc.Name) then
-            if desc:IsA("BillboardGui") or desc:IsA("SurfaceGui") then
-                if desc.Enabled ~= false then
-                    return true
-                end
-            elseif desc:IsA("ImageLabel") or desc:IsA("ImageButton") or desc:IsA("TextLabel") then
-                if desc.Visible ~= false then
-                    return true
-                end
-            elseif desc:IsA("BasePart") or desc:IsA("Model") or desc:IsA("Folder") or desc:IsA("Attachment") then
-                local n = string.lower(desc.Name or "")
-                
-                if n == "padlock"
-                    or n:find("padlock", 1, true)
-                    or n:find("lockicon", 1, true)
-                    or n:find("chestlock", 1, true)
-                    or n:find("bosslock", 1, true)
-                then
-                    return true
-                end
-            end
-        end
+        if locked(desc) then return true end
+        if desc:IsA("ProximityPrompt") and desc.Enabled
+            and (S.chestTextLocked(desc.ActionText) or S.chestTextLocked(desc.ObjectText)) then return true end
     end
-
-    local name = string.lower(inst.Name or "")
-    if name:find("boss", 1, true) and name:find("chest", 1, true) then
-        return true
-    end
-    if name:find("lockedchest", 1, true) or name:find("padlockchest", 1, true) then
-        return true
-    end
-
+    -- Decorative padlock meshes and hidden lock icons are not lock-state proof.
     return false
 end
 
@@ -2611,15 +2764,16 @@ function S.startAlkalineRouteGlide()
         local mapEnd = Autofarm.mapEndStuds or 100000
         local nextD = (Autofarm.distance or 0) + speed * dt
         if nextD >= mapEnd then
+            if CoreFarm.openAll or CoreFarm._ownedRun then
+                S.coreNoteLap()
+                if CoreFarm._drainingChests or CoreFarm._leaving then return end
+            end
             Autofarm._pendingMapWrap = true
             local ok, err = pcall(S.setAutofarmPose, 0)
             if not ok then
                 S.farmErr("wrap pose", err)
             else
                 S.farmLog("wrap", "map end → 0")
-            end
-            if CoreFarm.openAll or CoreFarm._ownedRun then
-                S.coreNoteLap()
             end
             return
         end
@@ -2979,6 +3133,8 @@ function S.runAutofarmCycle()
     if chest then
         S.holdAutofarmCruise("chest")
         S.autofarmVisitChest(chest)
+    elseif CoreFarm._drainingChests then
+        S.coreDrainChestsTick()
     end
     Autofarm._pendingMapWrap = false
 end
@@ -3293,101 +3449,116 @@ function S.chestMatchesAutofarmWhitelist(chest)
     if S.chestWhitelistWants("core") and S.chestTextHasCore(chest) then
         return true
     end
-    return false
+    local selectedKeys = {}
+    for _, option in ipairs(selected) do selectedKeys[S.canonChestKey(option)] = true end
+    for _, entry in ipairs(CHEST_CATALOG) do
+        if not selectedKeys[entry.canon] then return false end
+    end
+    return true -- "All types" includes new ChestNode tiers added by the game.
 end
 
 function S.findChestForAutofarm()
-    if Autofarm.openChests ~= true then
-        return nil
-    end
-    if #S.chestSelectionList(Autofarm.chestTypes) == 0 then
-        return nil
-    end
-    if tick() < (Autofarm.suppressChestOreStopUntil or 0) then
-        return nil
-    end
-
-    local best, bestDist = nil, math.huge
-    local reach = 15000
-    local seenNames = {}
-    local function consider(model)
-        if not model or not model.Parent then
-            return
-        end
-        local record = S.chestAttemptRecord(model)
-        if S.coreStorageObject(model) or record.done or record.tries >= 2 then return end
-        local label = S.getChestTypeKey(model)
-        if label ~= "" and not seenNames[label] and #seenNames < 8 then
-            seenNames[#seenNames + 1] = label
-            seenNames[label] = true
-        end
-        if not S.chestMatchesAutofarmWhitelist(model) then
-            return
-        end
-        local dist = S.getFlatDistanceToPlayer(model)
-        if dist <= reach and dist < bestDist and not S.chestLockStatus(model) then
-                    bestDist = dist
-            best = model
-                end
-            end
-    S.forEachWorldChestNode(consider)
-    if not best and S.chestWhitelistWants("core") and os.clock() - (Autofarm._coreMissNote or 0) > 30 then
-        Autofarm._coreMissNote = os.clock()
-        local saw = #seenNames > 0 and table.concat(seenNames, ", ") or "none"
-        S.interactionNote("chests", "No Core chest nearby. Nearby chest types: " .. saw .. ". Continuing the farm.")
-    end
+    if not Autofarm.openChests or #S.chestSelectionList(Autofarm.chestTypes) == 0 then return nil end
+    local best, distance = nil, math.huge
+    local reach = CoreFarm._drainingChests and math.huge or 15000
+    S.forEachWorldChestNode(function(chest)
+        S.rememberFarmChest(chest)
+        if not chest.Parent or S.coreStorageObject(chest) or S.isDecorativeOrShopChest(chest)
+            or CollectionService:HasTag(chest, "ShopItem") or CollectionService:HasTag(chest, "SupplyCrate") then return end
+        local record = S.chestAttemptRecord(chest)
+        if record.done or record.blocked or os.clock() < (record.retryAt or 0)
+            or not S.chestMatchesAutofarmWhitelist(chest) or S.chestLockStatus(chest) then return end
+        local d = S.getFlatDistanceToPlayer(chest)
+        if d <= reach and d < distance then best, distance = chest, d end
+    end)
     return best
 end
 
 function S.autofarmVisitChest(chest)
     if not chest or not chest.Parent or not Autofarm.enabled or not Autofarm.openChests
-        or S._chestInteraction or (S._finishSettings and S._finishSettings.busy) then return false end
+        or S._chestInteraction or CoreFarm._leaving then return false end
     chest = S.resolveDungeonChestModel(chest) or chest
-    if S.coreStorageObject(chest) then return false end
+    if S.coreStorageObject(chest) or S.isDecorativeOrShopChest(chest)
+        or not S.chestMatchesAutofarmWhitelist(chest) then return false end
     local record = S.chestAttemptRecord(chest)
-    if record.done or record.tries >= 2 or S.isChestPadlocked(chest) or not S.chestMatchesAutofarmWhitelist(chest) then return false end
-    local prompts = S.collectProximityPrompts(chest)
-    local prompt = prompts[1]
-    local pos = prompt and S.getPromptWorldPosition(prompt)
+    local remembered = S.rememberFarmChest(chest)
+    if record.done or record.blocked or os.clock() < (record.retryAt or 0) or S.isChestPadlocked(chest) then return false end
+    if S.chestOpened(chest) then record.done = true; return true end
     local root = S.getRoot()
-    if not prompt or not pos or not root then return false end
-    local character, cycle, savedDist = LocalPlayer.Character, Autofarm._cycleGen, Autofarm.distance
-    local maxDist = math.max(1, tonumber(prompt.MaxActivationDistance) or 10)
-    local drop = math.min(tonumber(Autofarm.chestUnderDepth) or 11, maxDist * 0.45)
-    local stand = pos + Vector3.new(0, -drop, math.min(2, maxDist * 0.2))
-    local before = tonumber(LocalPlayer:GetAttribute("Cores")) or 0
-    record.tries = record.tries + 1
+    if not root then return false end
+    local prompt = S.chestPrompt(chest)
+    if not prompt then
+        record.missingPrompt = (record.missingPrompt or 0) + 1
+        record.retryAt = os.clock() + 2
+        if record.missingPrompt >= 4 then record.blocked = true end
+        local pos = S.getInstancePosition(chest)
+        if pos and record.missingPrompt <= 2 then pcall(S.requestStreamAround, pos, 0.8) end
+        S.interactionNote("chest", chest.Name .. ": waiting for an opening prompt")
+        return false
+    end
+    local context = { chest = chest, root = root, character = LocalPlayer.Character,
+        cycle = Autofarm._cycleGen, farm = true }
+    S._chestInteraction = context
+    local savedDistance = Autofarm.distance
     local opened = false
     local ok, err = pcall(function()
-        S.cancelAutofarmTween(); S.ensureAutofarmAntiFall(true); S.lockAutofarmHover(true)
-        Autofarm._mineHoldPos, Autofarm._mineLookAt, Autofarm._gatePinY = stand, pos, stand.Y
-        root.Anchored = false; root.CFrame = CFrame.new(stand)
-        root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
-        S.setAutofarmPlatformStand(true)
+        S.cancelAutofarmTween()
+        S.ensureAutofarmAntiFall(true)
+        S.lockAutofarmHover(true)
         if Services.ToolService then pcall(function() Services.ToolService:UnequipTool() end) end
-        task.wait(0.2)
-        if not Autofarm.enabled or LocalPlayer.Character ~= character or cycle ~= Autofarm._cycleGen then return end
-        local held = S.holdChestInteract(chest)
-        if not held then return end
-        local deadline = os.clock() + 2
-        repeat
-            if not Autofarm.enabled or LocalPlayer.Character ~= character or cycle ~= Autofarm._cycleGen then return end
-            if S.chestOpened(chest, before) then opened = true; break end
-            task.wait(0.1)
-        until os.clock() >= deadline
+        for _ = 1, 2 do
+            if not S.chestInteractionActive(context) or not chest.Parent or record.tries >= 6 then break end
+            prompt = S.chestPrompt(chest)
+            if not prompt then break end
+            record.tries += 1
+            context.attempt = record.tries
+            context.coresBefore = tonumber(LocalPlayer:GetAttribute("Cores")) or 0
+            S.coreSetStatus("Opening " .. chest.Name .. " · attempt " .. record.tries .. "/6")
+            local held = S.holdChestInteract(chest, nil, context)
+            if not S.chestInteractionActive(context) then break end
+            if held or context.inputStarted or not chest.Parent then
+                local nativeWait = os.clock() + 0.8
+                repeat
+                    if S.chestOpened(chest, context.coresBefore) then opened = true; break end
+                    task.wait(0.08)
+                until not S.chestInteractionActive(context) or os.clock() >= nativeWait
+                if not opened and S.chestInteractionActive(context) then
+                    if held then S.chestServerInteract(context, prompt) end
+                    local deadline = os.clock() + 6
+                    repeat
+                        if not S.chestInteractionActive(context) then break end
+                        if S.chestOpened(chest, context.coresBefore) then opened = true; break end
+                        if prompt.Parent then S.pinChestInteraction(context, prompt) end
+                        task.wait(0.1)
+                    until os.clock() >= deadline
+                end
+            end
+            if opened then break end
+            if S.chestInteractionActive(context) then task.wait(0.35) end
+        end
     end)
-    record.done = opened
-    Autofarm.lockedChestSkip = Autofarm.lockedChestSkip or {}
-    Autofarm.lockedChestSkip[chest] = tick() + (opened and 3600 or 90)
-
-    if LocalPlayer.Character == character and Autofarm.enabled and cycle == Autofarm._cycleGen
-        and not (type(CoreFarm) == "table" and CoreFarm._leaving) then
-        S.clearMineHoldPin(); Autofarm._gatePinY = nil
-        if savedDist ~= nil then Autofarm.distance = savedDist; S.setAutofarmPose(savedDist) end
+    local sameRun = LocalPlayer.Character == context.character and S.getRoot() == root
+        and context.cycle == Autofarm._cycleGen
+    if opened then
+        record.done, record.blocked, record.retryAt = true, false, 0
+        if remembered then remembered.done = true end
+    elseif sameRun and not S._unloaded then
+        record.retryAt = os.clock() + math.min(8, 1 + record.tries)
+        record.blocked = record.tries >= 6
+    end
+    pcall(S.restoreCameraAim, context.camera)
+    if S._chestInteraction == context then S._chestInteraction = nil end
+    if sameRun and Autofarm.enabled and not CoreFarm._leaving then
+        S.clearMineHoldPin()
+        Autofarm._gatePinY = nil
+        if savedDistance ~= nil then Autofarm.distance = savedDistance; S.setAutofarmPose(savedDistance) end
         S.lockAutofarmHover(true)
     end
+    S.clearDragTarget()
     if not ok then S.interactionNote("chest error", tostring(err):sub(1, 120)) end
-    S.interactionNote("chest", chest.Name .. (opened and " opened and confirmed" or " not confirmed; skipped for 90s"))
+    S.interactionNote("chest", chest.Name .. (opened and ": opening confirmed"
+        or record.blocked and ": unconfirmed after 6 attempts; finish paused"
+        or ": unconfirmed; queued for retry"))
     return opened
 end
 
@@ -3506,7 +3677,7 @@ function S.ensureChestIndex()
                     or ((name:find("chest", 1, true) or name == "phoenix") and S.chestCanon(node) == "phoenix")
                 if (socket or core or phoenix) and not S.coreStorageObject(node) and not S.isChestInDungeonWave(node) then
                     local model = S.resolveDungeonChestModel(node) or node
-                    if S.isChestEspTarget(model) or core then cache.entries[model] = true end
+                    if S.isChestEspTarget(model) or core then cache.entries[model] = true; S.rememberFarmChest(model) end
                 end
             end
             node = node.Parent
@@ -3579,7 +3750,7 @@ function S.forEachWorldChestNode(callback)
     if not cache then return end
     for model in pairs(cache.entries) do
         if not model.Parent or not model:IsDescendantOf(Workspace) then cache.entries[model] = nil
-        elseif not S.coreStorageObject(model) and not S.isChestInDungeonWave(model) then callback(model) end
+        elseif not S.coreStorageObject(model) and not S.isChestInDungeonWave(model) then S.rememberFarmChest(model); callback(model) end
     end
 end
 
@@ -4212,6 +4383,8 @@ function S.coreCycleRun()
     if not S.corePlayerReady() then return false end
     local farmOn = Autofarm.enabled == true and typeof(Autofarm.origin) == "Vector3"
     if CoreFarm._runStarted and CoreFarm._ownedRun and farmOn then
+        if S._chestInteraction then return true end
+        if CoreFarm._drainingChests then S.coreDrainChestsTick(); return true end
         S.coreSetStatus("Running · lap " .. tostring((CoreFarm.laps or 0) + 1) .. "/" .. tostring(CoreFarm.rescans or 2))
         S.coreHoldChestRun()
         S.coreUnstickRun()
@@ -4263,6 +4436,7 @@ function S.stopCoreChestRun()
         return
     end
     CoreFarm._stopping = true
+    CoreFarm._drainingChests, CoreFarm._chestQuietSince = false, nil
     CoreFarm._userStop = true
     CoreFarm.enabled, CoreFarm._bootChurchWait = false, false
     CoreFarm._startPending = false
@@ -4335,6 +4509,9 @@ function S.coreApplyRun()
     CoreFarm._ownedRun = true
     CoreFarm._finishGen = (CoreFarm._finishGen or 0) + 1
     CoreFarm._keptCount, CoreFarm._missedCount = 0, 0
+    CoreFarm._drainingChests, CoreFarm._chestQuietSince, CoreFarm._chestSummary = false, nil, nil
+    S._knownFarmChests, S._farmChestInstances = {}, setmetatable({}, {__mode = "k"})
+    S.ensureChestIndex()
     CoreFarm._startStage = "loot tracker"
     S.coreStartLootWatch()
     Autofarm.chestTypes = picked
@@ -4373,6 +4550,7 @@ function S.coreApplyRun()
 end
 
 function S.coreUnstickRun()
+    if CoreFarm._drainingChests then return end
     if S._chestInteraction or (S._finishSettings and S._finishSettings.busy) then return end
     if not (CoreFarm.openAll and CoreFarm._ownedRun) or CoreFarm._leaving or CoreFarm._applying then
         return
@@ -4435,11 +4613,19 @@ function S.coreFinishActive(gen)
 end
 
 function S.chestOpened(chest, coresBefore)
-    if (tonumber(LocalPlayer:GetAttribute("Cores")) or 0) > coresBefore then return true end
-    if not chest.Parent then return true end
-    for _, name in ipairs({ "Opened", "IsOpened", "Looted" }) do if chest:GetAttribute(name) == true then return true end end
-    
-    return false
+    if type(coresBefore) == "number" and (tonumber(LocalPlayer:GetAttribute("Cores")) or 0) > coresBefore then return true end
+    if not chest then return false end
+    local opened = false
+    for _, name in ipairs({"Opened", "IsOpened", "Looted"}) do
+        if chest:GetAttribute(name) == true then opened = true; break end
+    end
+    if not opened then return false end
+    for _, prompt in ipairs(S.collectProximityPrompts(chest)) do
+        local action = string.lower(prompt.ActionText or "")
+        if prompt.Enabled and (action == "interact" or action:find("open", 1, true)) then return false end
+    end
+    return true
+    -- A streamed-out model, disabled prompt or local lid tween proves no reward.
 end
 
 function S.chestAttemptRecord(chest)
@@ -5667,7 +5853,7 @@ function S.coreFinishRun(before, gen)
 end
 
 function S.coreNoteLap()
-    if not (CoreFarm.openAll or CoreFarm._ownedRun) or CoreFarm._leaving then
+    if not (CoreFarm.openAll or CoreFarm._ownedRun) or CoreFarm._leaving or CoreFarm._drainingChests then
         return
     end
     local now = os.clock()
@@ -5681,23 +5867,10 @@ function S.coreNoteLap()
     if CoreFarm.laps < need then
         return
     end
-    CoreFarm._leaving = true
-    CoreFarm.openAll = false
-    CoreFarm._ownedRun = false
-    CoreFarm._runStarted = false
-    CoreFarm._finishGen = (CoreFarm._finishGen or 0) + 1
-    local gen, before = CoreFarm._finishGen, CoreFarm._coresBefore
-    
+    CoreFarm.laps = need
+    CoreFarm._drainingChests, CoreFarm._chestQuietSince = true, nil
     S.disconnectAll("autofarmGlide")
-    S.disconnectAll("autofarm")
-    task.spawn(function()
-        local ok, err = pcall(S.coreFinishRun, before, gen)
-        if not ok and S.coreFinishActive(gen) then
-            S.coreStopLootWatch()
-            S.clearDragTarget()
-            S.notify("Core", "Return paused: " .. tostring(err), 8)
-        end
-    end)
+    S.coreSetStatus("Finishing remaining chests")
 end
 
 function S.coreReturnLobby(before, gen, church)
@@ -5790,6 +5963,8 @@ function S.coreCopyDebug()
         .. "\nStatus: " .. tostring(CoreFarm._statusText or "Starting")
         .. "\nLaps: " .. tostring(CoreFarm.laps or 0) .. "/" .. tostring(CoreFarm.rescans or 2)
         .. "\nLoot: " .. tostring(CoreFarm._keptCount or 0) .. " collected, " .. tostring(CoreFarm._missedCount or 0) .. " missed"
+        .. "\nChests: " .. (CoreFarm._chestSummary and (tostring(CoreFarm._chestSummary.opened) .. " opened, "
+            .. tostring(CoreFarm._chestSummary.pending) .. " pending, " .. tostring(CoreFarm._chestSummary.locked) .. " locked") or "scanning")
         .. "\nAltar in range: " .. tostring(CoreFarm._altarInRange == true)
         .. "\n" .. tostring(CoreFarm._lastCycleError or "No startup error")
         .. "\n" .. table.concat(S._interactionLog or {}, "\n")
@@ -5930,3 +6105,4 @@ function S.setAntiAfk(enabled)
         end)
     end)
 end
+
