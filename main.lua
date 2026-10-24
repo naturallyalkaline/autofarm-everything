@@ -1,5 +1,5 @@
 --[[
-    naturally alkaline · v2.0.2
+    naturally alkaline · v2.0.3
     Autofarm: chests → shards / gear → church → lobby.
 ]]
 if typeof(getgenv) == "function" then
@@ -16,7 +16,7 @@ end
 local NA = {
     placeId = 74507545904779,
     game = "Drill to Earth's Core",
-    version = "2.0.2",
+    version = "2.0.3",
 }
 
 local Players = game:GetService("Players")
@@ -1621,7 +1621,7 @@ function S.chestPrompt(chest)
     for _, prompt in ipairs(S.collectProximityPrompts(chest)) do
         local action = string.lower(prompt.ActionText or "")
         if prompt.Enabled and not action:find("buy", 1, true) and not action:find("purchase", 1, true)
-            and not action:find("equip", 1, true) and not S.chestTextLocked(action) then
+            and not action:find("equip", 1, true) and not S.chestTextLocked(action) and not S.chestTextLocked(prompt.ObjectText) then
             local pos = S.getPromptWorldPosition(prompt)
             local root = S.getRoot()
             local range = tonumber(prompt.MaxActivationDistance) or 10
@@ -1668,6 +1668,7 @@ end
 
 function S.chestServerInteract(context, prompt)
     if not S.chestInteractionActive(context) or not context.chest.Parent or not Services.InteractionService then return false end
+    if S.isChestPadlocked(context.chest) then return false end
     if not S.pinChestInteraction(context, prompt) then return false end
     local target = S.chestInteractionTarget(context.chest, prompt, context.attempt)
     if not target or not target.Parent then return false end
@@ -1693,6 +1694,11 @@ function S.chestTextLocked(text)
     local lower = string.lower(tostring(text or ""))
     -- "Unlocked" and "unlocked chest" are positive states, not lock notices.
     lower = lower:gsub("unlocked", "")
+    if lower:match("^locked") or lower:match("^padlocked") then return true end
+    for _, phrase in ipairs({"requires a", "require a", "needs a", "need a", "use a", "use key", "unlock", "defeat", "clear dungeon", "complete dungeon"}) do
+        if lower:find(phrase, 1, true) and (lower:find("key", 1, true) or lower:find("defeat", 1, true)
+            or lower:find("dungeon", 1, true) or phrase == "unlock") then return true end
+    end
     return lower:match("%f[%a]locked%f[%A]") ~= nil
         or lower:match("%f[%a]padlocked%f[%A]") ~= nil
         or lower:find("requires key", 1, true) ~= nil
@@ -1828,7 +1834,7 @@ function S.coreRetryMissedChests()
 end
 
 function S.holdChestInteract(instance, seconds, context)
-    if not instance or not instance.Parent or S._unloaded or S.coreStorageObject(instance) then return false end
+    if not instance or not instance.Parent or S._unloaded or S.coreStorageObject(instance) or S.isChestPadlocked(instance) then return false end
     local owns = context == nil
     if owns then
         if S._chestInteraction then return false end
@@ -1867,7 +1873,7 @@ function S.holdChestInteract(instance, seconds, context)
         local target = S.chestInteractionTarget(instance, prompt, context.attempt)
         if target then S.setDragTarget(target) end
         task.wait(0.2)
-        if not S.chestInteractionActive(context) then return end
+        if not S.chestInteractionActive(context) or S.isChestPadlocked(instance) then return end
         -- Try native keyboard input first, so the game's own input controller
         -- gets the complete hold. Later attempts use prompt input as a fallback.
         if (context.attempt or 1) % 2 == 1 and keyDown() then method = "key"
@@ -1885,6 +1891,7 @@ function S.holdChestInteract(instance, seconds, context)
                 complete = true
                 break
             end
+            if S.chestLockStatus(instance) then return end
             if not instance.Parent or not prompt.Parent or not S.pinChestInteraction(context, prompt) then return end
             task.wait(0.08)
         end
@@ -2371,22 +2378,55 @@ end
 function S.isChestPadlocked(inst)
     if not inst then return false end
     if S.isChestMarkedLocked(inst) then return true end
-    local function locked(object)
-        if object:GetAttribute("Unlocked") == true or object:GetAttribute("CanOpen") == true
-            or object:GetAttribute("Locked") == false then return false end
-        return object:GetAttribute("Locked") == true or object:GetAttribute("Unlocked") == false
-            or object:GetAttribute("CanOpen") == false or object:GetAttribute("RequiresKey") == true
-            or object:GetAttribute("KeyRequired") == true or object:GetAttribute("NeedsKey") == true
-            or object:GetAttribute("Padlocked") == true or object:GetAttribute("BossLocked") == true
+    local function state(object)
+        local function yes(v) return v == true or v == 1 or (type(v) == "string" and v:lower() == "true") end
+        local function no(v) return v == false or v == 0 or (type(v) == "string" and v:lower() == "false") end
+        for _, key in ipairs({"Locked", "IsLocked", "Padlocked", "BossLocked", "DungeonLocked"}) do
+            if yes(object:GetAttribute(key)) then return true end
+        end
+        if yes(object:GetAttribute("Unlocked")) or yes(object:GetAttribute("CanOpen")) then return false end
+        for _, key in ipairs({"Unlocked", "CanOpen"}) do
+            if no(object:GetAttribute(key)) then return true end
+        end
+        for _, key in ipairs({"RequiresKey", "KeyRequired", "NeedsKey"}) do
+            if yes(object:GetAttribute(key)) then return true end
+        end
+        for _, key in ipairs({"LockState", "Status", "State"}) do
+            if S.chestTextLocked(object:GetAttribute(key)) then return true end
+        end
+        if no(object:GetAttribute("Locked")) or no(object:GetAttribute("IsLocked")) then return false end
+        return nil
     end
-    if locked(inst) then return true end
+    local ownState = state(inst)
+    if ownState == true then return true end
+    local gated = false
+    local node = inst
+    while node and node ~= Workspace do
+        if state(node) == true then return true end
+        local name = string.lower(node.Name or ""):gsub("[^%w]", "")
+        if S.chestTextLocked(node.Name) then return true end
+        if name:find("dungeon", 1, true) or name:find("spider", 1, true)
+            or name == "wave" or name:match("^wave%d+$") then gated = true end
+        for _, tag in ipairs({"LockedChest", "DungeonChest", "SpiderChest", "BossChest"}) do
+            if CollectionService:HasTag(node, tag) then
+                if tag == "LockedChest" then return true end
+                gated = true
+            end
+        end
+        node = node.Parent
+    end
     for _, desc in ipairs(inst:GetDescendants()) do
-        if locked(desc) then return true end
-        if desc:IsA("ProximityPrompt") and desc.Enabled
+        if state(desc) == true then return true end
+        if desc:IsA("BoolValue") and desc.Value == true then
+            local name = string.lower(desc.Name or "")
+            if name == "locked" or name == "islocked" or name == "requireskey" then return true end
+        end
+        if desc:IsA("ProximityPrompt")
             and (S.chestTextLocked(desc.ActionText) or S.chestTextLocked(desc.ObjectText)) then return true end
     end
-    -- Decorative padlock meshes and hidden lock icons are not lock-state proof.
-    return false
+    -- Gated rewards need an explicit open state; an ordinary Open prompt is insufficient.
+    -- Cosmetic padlock meshes alone do not make normal world chests locked.
+    return gated and ownState ~= false
 end
 
 function S.safeLookAt(from, lookAt)
@@ -3496,6 +3536,7 @@ function S.autofarmVisitChest(chest)
         if Services.ToolService then pcall(function() Services.ToolService:UnequipTool() end) end
         for _ = 1, 2 do
             if not S.chestInteractionActive(context) or not chest.Parent or record.tries >= 6 then break end
+            if S.isChestPadlocked(chest) then break end
             prompt = S.chestPrompt(chest)
             if not prompt then break end
             record.tries += 1
@@ -3504,7 +3545,7 @@ function S.autofarmVisitChest(chest)
             S.coreSetStatus("Opening " .. chest.Name .. " · attempt " .. record.tries .. "/6")
             local held = S.holdChestInteract(chest, nil, context)
             if not S.chestInteractionActive(context) then break end
-            if held or context.inputStarted or not chest.Parent then
+            if not S.isChestPadlocked(chest) and (held or context.inputStarted or not chest.Parent) then
                 local nativeWait = os.clock() + 0.8
                 repeat
                     if S.chestOpened(chest, context.coresBefore) then opened = true; break end
@@ -3514,14 +3555,14 @@ function S.autofarmVisitChest(chest)
                     if held then S.chestServerInteract(context, prompt) end
                     local deadline = os.clock() + 6
                     repeat
-                        if not S.chestInteractionActive(context) then break end
+                        if not S.chestInteractionActive(context) or S.chestLockStatus(chest) then break end
                         if S.chestOpened(chest, context.coresBefore) then opened = true; break end
                         if prompt.Parent then S.pinChestInteraction(context, prompt) end
                         task.wait(0.1)
                     until os.clock() >= deadline
                 end
             end
-            if opened then break end
+            if opened or S.isChestPadlocked(chest) then break end
             if S.chestInteractionActive(context) then task.wait(0.35) end
         end
     end)
