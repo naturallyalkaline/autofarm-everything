@@ -1,6 +1,6 @@
 --[[
     CORE FARM — Drill to Earth's Core (place 74507545904779)
-    v1.2.1 — Chest laps → shard hotbar / King's + Phoenix gear → church → lobby.
+    v1.2.2 — Phoenix chest support; chest laps → shard hotbar / King's + Phoenix gear → church → lobby.
     Compact controls, optional loot filters, and native church saving.
 ]]
 
@@ -34,7 +34,7 @@ local KLZE = {
     game = "Drill to Earth's Core",
     discord = "https://discord.gg/wQRybxxHdX",
     site = "https://klze-hub.pages.dev",
-    version = "1.2.1",
+    version = "1.2.2",
     obsidian = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/",
 }
 
@@ -287,6 +287,7 @@ local CHEST_CATALOG = {
     { label = "Golden Chest", canon = "gold" },
     { label = "Diamond Chest", canon = "diamond" },
     { label = "Void Chest", canon = "void" },
+    { label = "Phoenix Chest", canon = "phoenix" },
     { label = "Core Chest", canon = "core" },
     { label = "Mimic", canon = "mimic" },
 }
@@ -315,6 +316,9 @@ local CHEST_ALIAS = {
     diamondchest = "diamond",
     void = "void",
     voidchest = "void",
+    phoenix = "phoenix",
+    phoenixchest = "phoenix",
+    chestphoenix = "phoenix",
     core = "core",
     cores = "core",
     corechest = "core",
@@ -9279,6 +9283,7 @@ end
 
 -- Void first, then Diamond, then lower tiers.
 local SCRAP_CHEST_TIER = {
+    Phoenix = 110,
     Void = 100,
     Diamond = 90,
     Gold = 80,
@@ -9292,6 +9297,7 @@ local SCRAP_CHEST_TIER = {
 }
 
 local SCRAP_CHEST_ORDER = {
+    "Phoenix",
     "Void",
     "Diamond",
     "Gold",
@@ -9313,7 +9319,7 @@ function S.findScrapChestForHunt()
     for _, entry in ipairs(S.collectEspChests()) do
         local chest = entry.inst
         if chest and chest.Parent and not S.isChestPadlocked(chest) then
-            local key = S.getChestTypeKey(chest)
+            local key = S.chestCanon(chest)
             local tier = SCRAP_CHEST_TIER[key]
             if not tier then
                 local keyLower = string.lower(key)
@@ -13682,6 +13688,7 @@ function S.isTreasureChest(inst)
     if CollectionService:HasTag(inst, "SupplyCrate") then
         return false
     end
+    if S.isPhoenixLootChest(inst) then return true end
     if S.isArmorWorldItem(inst) then
         return false
     end
@@ -16894,7 +16901,7 @@ function S.runScrapFarmCycle()
                 Autofarm.scrapPhase = "chest_hunt"
                 Autofarm.openChests = true
                 Autofarm.chestTypes = table.clone and table.clone(SCRAP_CHEST_ORDER) or {
-                    "Void", "Diamond", "Gold", "Steel", "Core", "Mimic",
+                    "Phoenix", "Void", "Diamond", "Gold", "Steel", "Core", "Mimic",
                     "Rusty", "Common", "Free", "TutorialCommon",
                 }
                 S.trySetRayfieldFlag("terra_af_auto_chests", true)
@@ -20516,6 +20523,43 @@ function S.autofarmVisitOre(ore, knownPos)
     return broken
 end
 
+function S.isPhoenixLootChest(inst)
+    if not inst or not inst.Parent or not (inst:IsA("Model") or inst:IsA("BasePart")) then
+        return false
+    end
+    local name = string.lower(inst.Name or "")
+    local hint = name:find("chest", 1, true) or name == "phoenix"
+    for _, attr in ipairs({"ChestType", "Type", "ChestId", "DisplayName", "Tier"}) do
+        local value = inst:GetAttribute(attr)
+        if type(value) == "string" and S.canonChestKey(value) == "phoenix" then hint = true end
+    end
+    if not hint then return false end
+    if inst:GetAttribute("Armor") ~= nil or inst:GetAttribute("ArmorType") ~= nil
+        or string.lower(tostring(inst:GetAttribute("Class") or "")) == "armor"
+        or string.lower(tostring(inst:GetAttribute("Category") or "")) == "armor"
+        or string.lower(tostring(inst:GetAttribute("DisplayCategory") or "")) == "armor" then
+        return false
+    end
+    local cur = inst
+    while cur and cur ~= Workspace do
+        local ancestorName = string.lower(cur.Name or "")
+        if cur:IsA("Tool") or CollectionService:HasTag(cur, "ShopItem")
+            or CollectionService:HasTag(cur, "SupplyCrate")
+            or ancestorName:find("loadout", 1, true)
+            or ancestorName:find("shop", 1, true) then return false end
+        cur = cur.Parent
+    end
+    if S.isDecorativeOrShopChest(inst) or S.isChestInDungeonWave(inst) or S.isChestStepJunk(inst)
+        or S.chestCanon(inst) ~= "phoenix" then return false end
+    for _, prompt in ipairs(S.collectProximityPrompts(inst)) do
+        local action = string.lower(prompt.ActionText or "")
+        if prompt.Enabled and (action == "interact" or action:find("open", 1, true)) then
+            return true
+        end
+    end
+    return false
+end
+
 function S.isChestEspTarget(inst)
     if not inst or not inst.Parent then
         return false
@@ -20538,6 +20582,9 @@ function S.isChestEspTarget(inst)
         return false
     end
 
+    if S.chestCanon(inst) == "phoenix" then
+        return S.isPhoenixLootChest(inst)
+    end
     local underSocket = false
     local walk = inst.Parent
     for _ = 1, 6 do
@@ -20551,7 +20598,7 @@ function S.isChestEspTarget(inst)
         walk = walk.Parent
     end
     if not underSocket then
-        return false
+        return S.isPhoenixLootChest(inst)
     end
 
     if lower:find("chest", 1, true) or inst:FindFirstChild("Chest") or CollectionService:HasTag(inst, "Interactive") then
@@ -20588,7 +20635,9 @@ function S.ensureChestIndex()
                 local parent = node.Parent
                 local socket = parent and (parent.Name == "ChestNode" or parent.Name == "ChestNodes")
                 local core = name:find("core", 1, true) and name:find("chest", 1, true)
-                if (socket or core) and not S.coreStorageObject(node) and not S.isChestInDungeonWave(node) then
+                local phoenix = S.canonChestKey(node:GetAttribute("ChestType")) == "phoenix"
+                    or ((name:find("chest", 1, true) or name == "phoenix") and S.chestCanon(node) == "phoenix")
+                if (socket or core or phoenix) and not S.coreStorageObject(node) and not S.isChestInDungeonWave(node) then
                     local model = S.resolveDungeonChestModel(node) or node
                     if S.isChestEspTarget(model) or core then cache.entries[model] = true end
                 end
@@ -20616,7 +20665,8 @@ function S.ensureChestIndex()
                         if not skip and (inst == Workspace or inst:IsA("Model") or inst:IsA("Folder")) then
                             for _, child in ipairs(inst:GetChildren()) do
                                 if child:IsA("Model") or child:IsA("Folder")
-                                    or ((name == "ChestNode" or name == "ChestNodes") and child:IsA("BasePart")) then enqueue(child, true) end
+                                    or (child:IsA("BasePart") and ((name == "ChestNode" or name == "ChestNodes")
+                                        or string.lower(child.Name):find("phoenix", 1, true))) then enqueue(child, true) end
                             end
                         end
                     end
@@ -20639,7 +20689,8 @@ function S.ensureChestIndex()
     State.connections.chestIndexAdded = Workspace.DescendantAdded:Connect(function(inst)
         local parent = inst.Parent
         if inst:IsA("Model") or inst:IsA("Folder") or inst:IsA("ProximityPrompt")
-            or (inst:IsA("BasePart") and parent and (parent.Name == "ChestNode" or parent.Name == "ChestNodes")) then enqueue(inst) end
+            or (inst:IsA("BasePart") and ((parent and (parent.Name == "ChestNode" or parent.Name == "ChestNodes"))
+                or string.lower(inst.Name):find("phoenix", 1, true))) then enqueue(inst) end
     end)
     State.connections.chestIndexRemoved = Workspace.DescendantRemoving:Connect(function(inst) cache.entries[inst] = nil end)
     State.connections.chestIndexTagged = CollectionService:GetInstanceAddedSignal("Interactive"):Connect(function(inst) enqueue(inst) end)
@@ -27626,3 +27677,4 @@ task.spawn(function()
         if not collected then S.interactionNote("loot worker", tostring(collectErr):sub(1, 120)) end
     end
 end)
+
