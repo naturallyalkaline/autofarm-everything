@@ -1,6 +1,6 @@
 --[[
-    naturally alkaline · v2.0.3
-    Autofarm: chests → shards / gear → church → lobby.
+    naturally alkaline · v3.0.0
+    Chests · mobs · ores · village ammo · collection · saved settings.
 ]]
 if typeof(getgenv) == "function" then
     local environment, called = getgenv(), {}
@@ -16,7 +16,7 @@ end
 local NA = {
     placeId = 74507545904779,
     game = "Drill to Earth's Core",
-    version = "2.0.3",
+    version = "3.0.0",
 }
 
 local Players = game:GetService("Players")
@@ -309,283 +309,299 @@ end
 S._finishSettings = { freeSlots = true, equip = true, legendaryFirst = true, autoChurch = true }
 
 function S.createFarmUi()
-    local ui = { connections = {}, closed = false, cache = {} }
-    local library = { Unloaded = false, UnloadSignals = {}, Toggles = {}, Options = {} }
-    local controls = { Flags = {} }
-    local W, H = 470, 420
-    local C = { background = Color3.fromHex("11191d"), panel = Color3.fromHex("182429"),
-        border = Color3.fromHex("2a3c43"), raised = Color3.fromHex("203139"),
-        white = Color3.fromHex("ecf2f3"), muted = Color3.fromHex("9daeb4"),
-        accent = Color3.fromHex("94d3df"), water = Color3.fromHex("5695a7") }
-    S._farmUi = ui
-    ui.library, ui.colors = library, C
-    local function connect(signal, callback)
-        local connection = signal:Connect(function(...)
-            if not library.Unloaded then callback(...) end
-        end)
-        ui.connections[#ui.connections + 1] = connection
-        return connection
+    local ui={connections={},cache={},closed=false};local library={Unloaded=false,UnloadSignals={},Toggles={},Options={}}
+    local controls={Flags={}};local W,H=540,600
+    local C={background=Color3.fromHex("10171b"),panel=Color3.fromHex("172228"),raised=Color3.fromHex("203038"),
+        border=Color3.fromHex("2a3b43"),white=Color3.fromHex("e7eff2"),muted=Color3.fromHex("94a6af"),
+        accent=Color3.fromHex("88c9d7"),water=Color3.fromHex("5595ad"),purple=Color3.fromHex("c4a0f5"),gold=Color3.fromHex("ebcd83")}
+    S._farmUi=ui;ui.library,ui.colors=library,C
+    local function connect(signal,fn)
+        local c=signal:Connect(function(...)if not library.Unloaded then fn(...)end end)
+        ui.connections[#ui.connections+1]=c;return c
     end
-    local function create(class, name, parent, props)
-        local node = Instance.new(class)
-        node.Name = name
-        for key, value in pairs(props or {}) do node[key] = value end
-        node.Parent = parent
-        return node
+    local function create(class,name,parent,props)
+        local obj=Instance.new(class);obj.Name=name
+        for key,value in pairs(props or {})do obj[key]=value end;obj.Parent=parent;return obj
     end
-    local function round(node, radius)
-        create("UICorner", "Corner", node, { CornerRadius = UDim.new(0, radius or 5) })
+    local function corner(obj)create("UICorner","Corner",obj,{CornerRadius=UDim.new(0,5)})end
+    local function box(name,parent,x,y,w,h,color)
+        local obj=create("Frame",name,parent,{Position=UDim2.fromOffset(x,y),Size=UDim2.fromOffset(w,h),
+            BackgroundColor3=color or C.panel,BorderSizePixel=0});corner(obj);return obj
     end
-    local function stroke(node)
-        create("UIStroke", "Outline", node, { Color = C.border, Thickness = 1,
-            ApplyStrokeMode = Enum.ApplyStrokeMode.Border })
+    local function text(name,parent,x,y,w,h,value,color,size)
+        return create("TextLabel",name,parent,{Position=UDim2.fromOffset(x,y),Size=UDim2.fromOffset(w,h),
+            BackgroundTransparency=1,Text=value or "",TextColor3=color or C.white,TextSize=size or 12,
+            Font=Enum.Font.Gotham,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd})
     end
-    local function box(name, parent, x, y, w, h, color, radius)
-        local node = create("Frame", name, parent, { Position = UDim2.fromOffset(x, y),
-            Size = UDim2.fromOffset(w, h), BackgroundColor3 = color or C.background, BorderSizePixel = 0 })
-        if radius then round(node, radius) end
-        return node
+    local function button(name,parent,x,y,w,h,value)
+        local obj=create("TextButton",name,parent,{Position=UDim2.fromOffset(x,y),Size=UDim2.fromOffset(w,h),
+            BackgroundColor3=C.raised,BorderSizePixel=0,Text=value or "",TextSize=12,Font=Enum.Font.GothamMedium,
+            TextColor3=C.white,AutoButtonColor=true});corner(obj);return obj
     end
-    local function text(name, parent, x, y, w, h, caption, size, color, bold)
-        return create("TextLabel", name, parent, { Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(w, h),
-            BackgroundTransparency = 1, BorderSizePixel = 0, Text = caption or "", TextColor3 = color or C.white,
-            TextSize = size or 12, Font = bold and Enum.Font.GothamMedium or Enum.Font.Gotham,
-            TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Center,
-            TextTruncate = Enum.TextTruncate.AtEnd })
+    local function label(obj,value)if obj and obj.Text~=tostring(value)then obj.Text=tostring(value)end end
+    local function flag(name,value,fn)
+        local f={CurrentValue=value,_value={Value=value}}
+        function f:Set(v)self.CurrentValue=v;self._value.Value=v;if fn then fn(v)end end
+        controls.Flags[name]=f
+        if type(value)=="boolean"then library.Toggles[name]=f._value else library.Options[name]=f._value end
+        return f
     end
-    local function button(name, parent, x, y, w, h, caption)
-        local node = create("TextButton", name, parent, { Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(w, h),
-            BackgroundColor3 = C.raised, BorderSizePixel = 0, AutoButtonColor = true, Active = true,
-            Text = caption, TextColor3 = C.white, TextSize = 12, Font = Enum.Font.GothamMedium })
-        round(node); stroke(node)
-        return node
-    end
-    local function setText(node, value)
-        value = tostring(value or "")
-        if node and node.Text ~= value then node.Text = value end
-    end
-    local function flag(name, value, paint)
-        local element = { Flag = name, CurrentValue = value, _value = { Value = value } }
-        function element:Set(nextValue)
-            self.CurrentValue, self._value.Value = nextValue, nextValue
-            if paint then paint(nextValue) end
-        end
-        controls.Flags[name] = element
-        if type(value) == "boolean" then library.Toggles[name] = element._value
-        else library.Options[name] = element._value end
-        return element
-    end
-    local function bottle(parent, x, y)
-        local icon = box("WaterBottleIcon", parent, x, y, 30, 42, C.panel)
-        icon.BackgroundTransparency = 1
-        box("BottleCap", icon, 9, 0, 12, 5, C.accent, 2)
-        box("BottleNeck", icon, 10, 6, 10, 7, C.white, 2)
-        local body = box("BottleBody", icon, 4, 12, 22, 28, C.white, 6)
-        box("Water", body, 2, 12, 18, 14, C.water, 4)
-        box("BottleLabel", body, 2, 7, 18, 8, C.accent, 2)
-        return icon
-    end
-    function library:OnUnload(callback) self.UnloadSignals[#self.UnloadSignals + 1] = callback end
+    function library:OnUnload(fn)self.UnloadSignals[#self.UnloadSignals+1]=fn end
     function library:Unload()
-        if self.Unloaded then return end
-        self.Unloaded = true
-        for _, connection in ipairs(ui.connections) do pcall(function() connection:Disconnect() end) end
-        ui.connections = {}
-        if self.ScreenGui then self.ScreenGui:Destroy() end
-        for _, callback in ipairs(self.UnloadSignals) do pcall(callback) end
-        self.UnloadSignals = {}
+        if self.Unloaded then return end;self.Unloaded=true
+        for _,c in ipairs(ui.connections)do pcall(function()c:Disconnect()end)end;ui.connections={}
+        for _,fn in ipairs(self.UnloadSignals)do pcall(fn)end;self.UnloadSignals={}
+        if self.ScreenGui then self.ScreenGui:Destroy()end
     end
-    function library:Notify(message, duration)
-        if self.Unloaded or not ui.toast then return end
-        ui.toastToken = (ui.toastToken or 0) + 1
-        local token = ui.toastToken
-        setText(ui.toastText, message)
-        ui.toast.Visible = true
-        task.delay(math.clamp(tonumber(duration) or 4, 1, 12), function()
-            if not self.Unloaded and ui.toastToken == token then ui.toast.Visible = false end
-        end)
+    function library:Notify(message,duration)
+        if not ui.toast or self.Unloaded then return end
+        ui.toastToken=(ui.toastToken or 0)+1;local token=ui.toastToken
+        label(ui.toastText,message);ui.toast.Visible=true
+        task.delay(duration or 5,function()if not self.Unloaded and ui.toastToken==token then ui.toast.Visible=false end end)
     end
     function library:Toggle()
-        if not ui.main then return end
-        ui.main.Visible = not ui.main.Visible
-        ui.restore.Visible = not ui.main.Visible
-        ui.popup.Visible, ui.scrim.Visible, ui.drag = false, false, nil
+        if not ui.main then return end;ui.main.Visible=not ui.main.Visible;ui.restore.Visible=not ui.main.Visible;ui.drag=nil
     end
-    function controls:Notify(options)
-        library:Notify(tostring(options.Content or ""), options.Duration)
-    end
+    function controls:Notify(options)library:Notify(options.Content,options.Duration)end
     function ui:mount()
         if self.main then return end
-        local playerGui = LocalPlayer:FindFirstChild("PlayerGui") or LocalPlayer:WaitForChild("PlayerGui", 15)
-        if not playerGui then error("PlayerGui is not ready") end
-        local screen = create("ScreenGui", "NaturallyAlkaline", playerGui, { ResetOnSpawn = false, IgnoreGuiInset = true,
-            DisplayOrder = 100, ZIndexBehavior = Enum.ZIndexBehavior.Sibling })
-        library.ScreenGui = screen
-        local main = box("FarmWindow", screen, 0, 0, W, H, C.background, 8)
-        main.AnchorPoint, main.Position, main.Active = Vector2.new(0.5, 0.5), UDim2.fromScale(0.5, 0.5), true
-        stroke(main)
-        ui.main = main
-        ui.scale = create("UIScale", "ResponsiveScale", main, { Scale = 1 })
-        local header = button("DragHeader", main, 1, 1, W - 2, 67, "")
-        header.BackgroundColor3 = C.panel
-        bottle(header, 17, 13)
-        text("Title", header, 61, 12, 300, 25, "naturally alkaline", 19, C.white, true)
-        text("Subtitle", header, 61, 36, 220, 18, "Autofarm", 11, C.muted)
-        local hide = button("HideMenu", header, 419, 20, 30, 27, "−")
-        connect(hide.Activated, function() library:Toggle() end)
-        local status = box("StatusPanel", main, 18, 86, 434, 58, C.panel, 5)
-        text("StatusCaption", status, 12, 5, 300, 18, "STATUS", 9, C.muted)
-        ui.status = text("CycleStatus", status, 12, 24, 300, 25, "Starting", 13, C.white, true)
-        ui.master = button("CycleToggle", status, 328, 13, 94, 32, "Stop")
-        local master = flag("dtec_core_open", CoreFarm.enabled == true,
-            function(value) setText(ui.master, value and "Stop" or "Start") end)
-        master:Set(CoreFarm.enabled == true)
-        connect(ui.master.Activated, function()
-            local value = not master.CurrentValue
-            master:Set(value)
-            S.coreMenuSetEnabled(value)
-        end)
-        text("LapsCaption", main, 20, 161, 126, 17, "Chest laps", 11, C.muted)
-        text("KeptCaption", main, 169, 161, 126, 17, "Items kept", 11, C.muted)
-        text("MissedCaption", main, 318, 161, 126, 17, "Unconfirmed", 11, C.muted)
-        ui.progressText = text("LapProgress", main, 20, 183, 126, 25, "0 / 2", 18, C.white, true)
-        ui.kept = text("KeptValue", main, 169, 183, 126, 25, "0", 18, C.white, true)
-        ui.missed = text("MissedValue", main, 318, 183, 126, 25, "0", 18, C.white, true)
-        local track = box("ProgressTrack", main, 20, 220, 430, 2, C.border)
-        ui.progressFill = box("ProgressFill", track, 0, 0, 0, 2, C.accent)
-        text("LapsLabel", main, 20, 239, 250, 30, "Laps per run")
-        local minus = button("DecreaseLaps", main, 334, 239, 30, 30, "−")
-        local lapsValue = text("LapsValue", main, 364, 239, 54, 30, "2")
-        lapsValue.TextXAlignment = Enum.TextXAlignment.Center
-        local plus = button("IncreaseLaps", main, 418, 239, 30, 30, "+")
-        local laps = flag("dtec_core_rescan", CoreFarm.rescans or 2, function(v) setText(lapsValue, v) end)
-        laps:Set(CoreFarm.rescans or 2)
-        local function changeLaps(delta)
-            CoreFarm.rescans = math.clamp((tonumber(laps.CurrentValue) or 2) + delta, 1, 10)
-            laps:Set(CoreFarm.rescans)
-            self:refresh()
-        end
-        connect(minus.Activated, function() changeLaps(-1) end)
-        connect(plus.Activated, function() changeLaps(1) end)
-        text("ChestTypesLabel", main, 20, 282, 210, 30, "Chest types")
-        ui.typesButton = button("ChestTypes", main, 249, 282, 199, 30, "All types")
-        local save = button("SaveReturn", main, 20, 331, 270, 33, "Save & return")
-        local retry = button("RetryReturn", main, 302, 331, 146, 33, "Retry return")
-        connect(save.Activated, S.coreSaveReturnNow)
-        connect(retry.Activated, S.coreRetryChurchReturn)
-        box("FooterRule", main, 0, 381, W, 1, C.border)
-        text("Shortcut", main, 20, 390, 140, 20, "Right Ctrl · menu", 10, C.muted)
-        local retryChests = button("RetryChests", main, 169, 388, 98, 24, "Retry chests")
-        connect(retryChests.Activated, S.coreRetryMissedChests)
-        local log = button("CopyLog", main, 278, 388, 82, 24, "Copy log")
-        local unload = button("UnloadScript", main, 371, 388, 77, 24, "Unload")
-        connect(log.Activated, S.coreCopyDebug)
-        connect(unload.Activated, function() library:Unload() end)
-        ui.restore = button("RestoreFarm", screen, 18, 100, 166, 32, "naturally alkaline")
-        ui.restore.Visible = false
-        connect(ui.restore.Activated, function() library:Toggle() end)
-        ui.toast = box("Notification", screen, 0, 0, 350, 50, C.panel, 5)
-        ui.toast.AnchorPoint, ui.toast.Position, ui.toast.Visible = Vector2.new(1, 1), UDim2.new(1, -18, 1, -18), false
-        stroke(ui.toast)
-        ui.toastText = text("ToastText", ui.toast, 12, 5, 326, 40, "", 11)
-        ui.toastText.TextWrapped = true
-        local chosen, rows = {}, {}
-        for _, label in ipairs(S.chestLabelsFromSaved(S.chestSelectionList(CoreFarm.chestTypes))) do chosen[label] = true end
-        local types = flag("dtec_core_chest_types", {})
-        ui.scrim = button("DismissChestTypes", main, 0, 0, W, H, "")
-        ui.scrim.BackgroundTransparency, ui.scrim.ZIndex, ui.scrim.Visible = 1, 40, false
-        ui.popup = box("ChestTypePicker", main, 226, 131, 222, 222, C.panel, 5)
-        ui.popup.ZIndex, ui.popup.Visible = 50, false
-        stroke(ui.popup)
-        local allTypes = button("SelectAllChests", ui.popup, 6, 6, 200, 24, "Select all")
-        allTypes.ZIndex = 52
-        local scroll = create("ScrollingFrame", "ChestTypeOptions", ui.popup, {
-            Position = UDim2.fromOffset(6, 36), Size = UDim2.new(1, -12, 1, -42), BackgroundTransparency = 1,
-            BorderSizePixel = 0, ScrollBarThickness = 3, ScrollBarImageColor3 = C.muted,
-            CanvasSize = UDim2.fromOffset(0, #CHEST_TYPE_OPTIONS * 29), ZIndex = 51 })
-        local function paintTypes()
-            local selected = {}
-            for _, label in ipairs(CHEST_TYPE_OPTIONS) do if chosen[label] then selected[#selected + 1] = label end end
-            types:Set(selected)
-            CoreFarm.chestTypes, CoreFarm._chestPick = selected, selected
-            if CoreFarm.openAll or CoreFarm._ownedRun then Autofarm.chestTypes, Autofarm.openChests = selected, true end
-            setText(ui.typesButton, #selected == #CHEST_TYPE_OPTIONS and "All types" or #selected .. " selected")
-            for label, row in pairs(rows) do
-                row.Text, row.TextColor3 = (chosen[label] and "✓  " or "    ") .. label, chosen[label] and C.white or C.muted
-            end
-        end
-        for i, label in ipairs(CHEST_TYPE_OPTIONS) do
-            local row = button("ChestOption" .. i, scroll, 0, (i - 1) * 29, 200, 26, label)
-            row.ZIndex, row.TextSize = 52, 11
-            rows[label] = row
-            connect(row.Activated, function()
-                local count = 0
-                for _, selected in pairs(chosen) do if selected then count = count + 1 end end
-                if chosen[label] and count <= 1 then return end
-                chosen[label] = not chosen[label]
-                paintTypes()
+        local pg=LocalPlayer:FindFirstChild("PlayerGui") or LocalPlayer:WaitForChild("PlayerGui",15)
+        if not pg then error("PlayerGui not ready")end
+        local screen=create("ScreenGui","NaturallyAlkaline",pg,{ResetOnSpawn=false,IgnoreGuiInset=true,DisplayOrder=100,ZIndexBehavior=Enum.ZIndexBehavior.Sibling})
+        library.ScreenGui=screen
+        local main=box("FarmWindow",screen,0,0,W,H,C.background);self.main=main
+        main.AnchorPoint=Vector2.new(0.5,0.5);main.Position=UDim2.fromScale(0.5,0.5);main.Active=true
+        create("UIStroke","Outline",main,{Color=C.border,Thickness=1})
+        self.scale=create("UIScale","ResponsiveScale",main,{Scale=1})
+        local header=button("DragHeader",main,1,1,W-2,64,"");header.BackgroundColor3=C.panel
+        local bottle=box("WaterBottleIcon",header,18,16,20,34,C.white)
+        box("BottleCap",bottle,5,-5,10,6,C.accent);box("Water",bottle,2,16,16,15,C.water)
+        box("BottleLabel",bottle,2,10,16,8,C.accent)
+        text("Title",header,52,12,390,24,"naturally alkaline",C.white,19)
+        text("Version",header,53,36,380,16,"3.0  /  Drill to Earth's Core",C.muted,10)
+        local hide=button("HideMenu",header,W-48,20,28,26,"−");connect(hide.Activated,function()library:Toggle()end)
+        self.pages,self.nav={},{}
+        local pageNames={"Cycle","Hunt","Resources","Villages","Settings"}
+        for i,name in ipairs(pageNames)do
+            local tab=button("Tab"..name,main,16+(i-1)*103,74,97,28,name);self.nav[name]=tab
+            local page=create("ScrollingFrame",name.."Page",main,{Position=UDim2.fromOffset(16,158),Size=UDim2.fromOffset(508,382),
+                BackgroundTransparency=1,BorderSizePixel=0,ScrollBarThickness=3,ScrollBarImageColor3=C.muted,
+                CanvasSize=UDim2.fromOffset(0,380),Visible=i==1})
+            self.pages[name]=page
+            connect(tab.Activated,function()
+                self.selected=name
+                for key,p in pairs(self.pages)do p.Visible=key==name;self.nav[key].TextColor3=key==name and C.accent or C.muted end
+                self:refresh()
             end)
         end
-        paintTypes()
-        connect(allTypes.Activated, function()
-            for _, label in ipairs(CHEST_TYPE_OPTIONS) do chosen[label] = true end
-            paintTypes()
+        self.selected="Cycle";self.nav.Cycle.TextColor3=C.accent
+        local status=box("StatusPanel",main,16,113,508,35,C.panel)
+        self.status=text("CycleStatus",status,10,0,377,35,"Starting",C.white)
+        self.master=button("CycleToggle",status,397,5,102,25,"Stop all")
+        flag("dtec_core_open",CoreFarm.enabled,function(v)label(self.master,v and "Stop all" or "Start")end)
+        connect(self.master.Activated,function()
+            if S._v3Running then S.v3Park("Stopped") else S.v3Start()end;self:refresh()
         end)
-        connect(ui.typesButton.Activated, function() ui.popup.Visible = not ui.popup.Visible; ui.scrim.Visible = ui.popup.Visible end)
-        connect(ui.scrim.Activated, function() ui.popup.Visible, ui.scrim.Visible = false, false end)
+        self.toggles={}
+        local function toggle(page,y,key,title)
+            local b=button("Toggle_"..key,page,0,y,496,32,"")
+            self.toggles[key]={button=b,title=title}
+            connect(b.Activated,function()S.v3Set(key,not S._v3[key])end);return b
+        end
+        local function choice(page,y,key,title,choices)
+            text(key.."Label",page,4,y,200,30,title,C.muted)
+            local buttons={};local width=math.floor(280/#choices)
+            for i,value in ipairs(choices)do
+                local b=button(key..value,page,212+(i-1)*width,y,width-5,29,value);buttons[value]=b
+                connect(b.Activated,function()S.v3Set(key,value);self:refresh()end)
+            end
+            self.choices=self.choices or {};self.choices[key]=buttons
+        end
+        local function multi(page,y,key,title,values)
+            text(key.."Label",page,3,y,490,24,title,C.muted);y+=28
+            local rows={}
+            for i,value in ipairs(values)do
+                local row=button(key.."_"..value,page,((i-1)%3)*166,y+math.floor((i-1)/3)*32,160,28,"");rows[value]=row
+                connect(row.Activated,function()
+                    local picked=table.clone(S._v3[key]);picked[value]=not picked[value] or nil
+                    S.v3Set(key,picked)
+                end)
+            end
+            self.multi=self.multi or {};self.multi[key]=rows
+            return y+math.ceil(#values/3)*32
+        end
+        local function stepper(page,y,key,title,step,min,max)
+            text(key.."Label",page,4,y,260,30,title,C.muted)
+            local minus=button(key.."Minus",page,328,y,34,28,"−")
+            local value=text(key.."Value",page,368,y,80,28,"",C.white)
+            local plus=button(key.."Plus",page,456,y,34,28,"+")
+            self.steps=self.steps or {};self.steps[key]=value
+            connect(minus.Activated,function()S.v3Set(key,math.clamp(S._v3[key]-step,min,max))end)
+            connect(plus.Activated,function()S.v3Set(key,math.clamp(S._v3[key]+step,min,max))end)
+        end
+        local cycle=self.pages.Cycle
+        toggle(cycle,0,"chests","Farm chests")
+        stepper(cycle,41,"laps","Laps per run",1,1,10)
+        toggle(cycle,80,"church","Save at church & return after chest laps")
+        self.progressText=text("LapProgress",cycle,4,123,230,25,"0 / 2 laps",C.white,16)
+        self.kept=text("KeptValue",cycle,250,123,240,25,"0 items kept",C.muted)
+        local progress=box("ProgressTrack",cycle,4,157,486,2,C.border)
+        self.progressFill=box("ProgressFill",progress,0,0,0,2,C.accent)
+        text("ChestTypesLabel",cycle,4,176,480,24,"Chest types",C.muted)
+        self.chestRows={};local chosen={}
+        for _,name in ipairs(CoreFarm.chestTypes)do chosen[name]=true end
+        flag("dtec_core_chest_types",CoreFarm.chestTypes,function(value)
+            chosen={};for _,name in ipairs(value)do chosen[name]=true end
+        end)
+        flag("dtec_core_rescan",CoreFarm.rescans)
+        local all=button("SelectAllChests",cycle,360,174,130,26,"Select all")
+        connect(all.Activated,function()S.v3Set("chestTypes",table.clone(CHEST_TYPE_OPTIONS))end)
+        for i,name in ipairs(CHEST_TYPE_OPTIONS)do
+            local b=button("ChestOption"..i,cycle,((i-1)%2)*250,208+math.floor((i-1)/2)*31,244,27,"");self.chestRows[name]=b
+            connect(b.Activated,function()
+                local nextList={};local removing=chosen[name]
+                for _,option in ipairs(CHEST_TYPE_OPTIONS)do if (option~=name and chosen[option]) or (option==name and not removing)then nextList[#nextList+1]=option end end
+                if #nextList==0 then return end;S.v3Set("chestTypes",nextList)
+            end)
+        end
+        local save=button("SaveReturn",cycle,0,408,245,31,"Save & return now")
+        local retry=button("RetryReturn",cycle,251,408,245,31,"Retry church return")
+        local retryChest=button("RetryChests",cycle,0,447,496,30,"Retry unconfirmed chests")
+        connect(save.Activated,function()S.v3CancelActivity();S.coreSaveReturnNow()end)
+        connect(retry.Activated,S.coreRetryChurchReturn);connect(retryChest.Activated,S.coreRetryMissedChests)
+        cycle.CanvasSize=UDim2.fromOffset(0,490)
+        local hunt=self.pages.Hunt
+        toggle(hunt,0,"hunt","Farm selected mobs across the map")
+        toggle(hunt,40,"aura","Kill aura · nearby mobs")
+        stepper(hunt,83,"auraRange","Aura range",6,6,60)
+        self.killCount=text("KillCount",hunt,4,123,490,24,"0 confirmed kills",C.muted)
+        text("TargetsCaption",hunt,4,155,490,24,"Targets · updates as mobs load",C.muted)
+        self.mobRows={};self.mobPage=hunt
+        local resources=self.pages.Resources
+        toggle(resources,0,"mine","Mine selected ores")
+        toggle(resources,40,"mines","Visit mine interiors")
+        local oreY=multi(resources,82,"ores","Ore selection",{"Coal","Copper","Iron","Gold","Diamond","Ruby","Emerald","HeartGem"})
+        toggle(resources,oreY+8,"collect","Auto collect selected items")
+        local lootY=multi(resources,oreY+49,"loot","Collect",{"Shards","Gear","Valuables","Ores","Scrap","Consumables","Other"})
+        toggle(resources,lootY+6,"corpses","Collect corpses")
+        toggle(resources,lootY+46,"bounties","Collect bounty corpses")
+        self.mined=text("Mined",resources,4,lootY+88,490,25,"0 ores mined",C.muted)
+        resources.CanvasSize=UDim2.fromOffset(0,lootY+130)
+        local villages=self.pages.Villages
+        toggle(villages,0,"ammoBuy","Visit villages & buy selected ammo")
+        local ammoY=multi(villages,41,"ammo","Ammo types",{"Pistol","Rifle","Special","Shotgun"})
+        stepper(villages,ammoY+6,"spendLimit","Session spending cap · coins",500,0,100000000)
+        stepper(villages,ammoY+45,"reserveCoins","Keep at least · coins",500,0,100000000)
+        toggle(villages,ammoY+87,"stock","Stock highlights & rare-item alerts")
+        self.stockInfo=text("StockInfo",villages,4,ammoY+128,490,24,"Loaded stock · refreshed as villages stream",C.muted)
+        self.stockParent=villages;self.stockY=ammoY+159;self.stockLabels={}
+        local settings=self.pages.Settings
+        toggle(settings,0,"autoStart","Start saved farms when executed")
+        toggle(settings,40,"autoQueue","Auto queue · solo")
+        choice(settings,82,"queueMode","Queue mode",{"Unranked","Ranked"})
+        toggle(settings,122,"executeOnTeleport","Execute again after teleport")
+        self.queueInfo=text("QueueInfo",settings,4,162,490,25,"",C.muted)
+        stepper(settings,202,"speed","Travel speed",100,100,1500)
+        local saveCfg=button("SaveConfig",settings,0,245,245,32,"Save settings")
+        local loadCfg=button("ReloadConfig",settings,251,245,245,32,"Reload settings")
+        connect(saveCfg.Activated,function()S.v3SaveConfig();self:refresh()end)
+        connect(loadCfg.Activated,function()
+            S.v3Park("Loading settings");S.v3LoadConfig()
+            S.trySetControlsFlag("dtec_core_chest_types",CoreFarm.chestTypes)
+            if S._v3.autoStart then S.v3Start()end;self:refresh()
+        end)
+        self.configInfo=text("ConfigInfo",settings,4,285,490,30,"",C.muted)
+        text("ConfigPath",settings,4,320,490,24,"naturally_alkaline_v3.json",C.muted,10)
+        box("FooterRule",main,16,549,508,1,C.border)
+        self.sack=text("SackCapacity",main,19,560,270,24,"Sack · waiting for counter",C.muted,11)
+        local copy=button("CopyLog",main,322,560,100,25,"Copy log")
+        local unload=button("UnloadScript",main,430,560,94,25,"Unload")
+        connect(copy.Activated,S.coreCopyDebug);connect(unload.Activated,function()library:Unload()end)
+        self.restore=button("RestoreFarm",screen,18,100,166,32,"naturally alkaline");self.restore.Visible=false
+        connect(self.restore.Activated,function()library:Toggle()end)
+        self.toast=box("Notification",screen,0,0,400,62,C.panel)
+        self.toast.AnchorPoint=Vector2.new(1,1);self.toast.Position=UDim2.new(1,-18,1,-18);self.toast.Visible=false
+        self.toastText=text("ToastText",self.toast,12,6,376,50,"",C.purple,12);self.toastText.TextWrapped=true
         local function fit()
-            local camera = Workspace.CurrentCamera
-            ui.viewport = camera and camera.ViewportSize or Vector2.new(1280, 720)
-            ui.scale.Scale = math.max(0.2, math.min(1, (ui.viewport.X - 24) / W, (ui.viewport.Y - 36) / H))
-            main.Position = UDim2.fromScale(0.5, 0.5)
+            local camera=Workspace.CurrentCamera;self.viewport=camera and camera.ViewportSize or Vector2.new(1280,720)
+            self.scale.Scale=math.max(0.2,math.min(1,(self.viewport.X-24)/W,(self.viewport.Y-36)/H));main.Position=UDim2.fromScale(0.5,0.5)
         end
         fit()
-        local camera = Workspace.CurrentCamera
-        if camera then ui.cameraConnection = connect(camera:GetPropertyChangedSignal("ViewportSize"), fit) end
-        connect(Workspace:GetPropertyChangedSignal("CurrentCamera"), function()
-            camera = Workspace.CurrentCamera
-            if ui.cameraConnection then ui.cameraConnection:Disconnect() end
-            if camera then ui.cameraConnection = connect(camera:GetPropertyChangedSignal("ViewportSize"), fit) end
-            fit()
+        if Workspace.CurrentCamera then self.cameraConnection=connect(Workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"),fit)end
+        connect(Workspace:GetPropertyChangedSignal("CurrentCamera"),function()
+            if self.cameraConnection then self.cameraConnection:Disconnect()end
+            if Workspace.CurrentCamera then self.cameraConnection=connect(Workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"),fit)end;fit()
         end)
-        connect(header.InputBegan, function(input)
-            if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-                ui.drag = { input = input, x = input.Position.X, y = input.Position.Y, position = main.Position }
-            end
+        connect(header.InputBegan,function(input)
+            if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then self.drag={input=input,x=input.Position.X,y=input.Position.Y,position=main.Position}end
         end)
-        connect(UserInputService.InputChanged, function(input)
-            local drag = ui.drag
-            if not drag or not screen.Enabled then return end
-            if input.UserInputType ~= Enum.UserInputType.MouseMovement and input ~= drag.input then return end
-            local viewport, scale = ui.viewport, ui.scale.Scale
-            local xBound = math.max(0, (viewport.X - W * scale) * 0.5 - 10)
-            local yBound = math.max(0, (viewport.Y - H * scale) * 0.5 - 10)
-            local x = math.clamp(drag.position.X.Offset + input.Position.X - drag.x, -xBound, xBound)
-            local y = math.clamp(drag.position.Y.Offset + input.Position.Y - drag.y, -yBound, yBound)
-            main.Position = UDim2.new(0.5, x, 0.5, y)
+        connect(UserInputService.InputChanged,function(input)
+            local d=self.drag;if not d or not screen.Enabled then return end
+            if input.UserInputType~=Enum.UserInputType.MouseMovement and input~=d.input then return end
+            local xBound=math.max(0,(self.viewport.X-W*self.scale.Scale)*0.5-10)
+            local yBound=math.max(0,(self.viewport.Y-H*self.scale.Scale)*0.5-10)
+            main.Position=UDim2.new(0.5,math.clamp(d.position.X.Offset+input.Position.X-d.x,-xBound,xBound),0.5,math.clamp(d.position.Y.Offset+input.Position.Y-d.y,-yBound,yBound))
         end)
-        connect(UserInputService.InputEnded, function(input)
-            if ui.drag and (input == ui.drag.input or input.UserInputType == Enum.UserInputType.MouseButton1) then ui.drag = nil end
+        connect(UserInputService.InputEnded,function(input)if self.drag and (input==self.drag.input or input.UserInputType==Enum.UserInputType.MouseButton1)then self.drag=nil end end)
+        connect(UserInputService.InputBegan,function(input,processed)
+            if not processed and input.KeyCode==Enum.KeyCode.RightControl and not UserInputService:GetFocusedTextBox()then library:Toggle()end
         end)
-        connect(UserInputService.InputBegan, function(input, processed)
-            if not processed and screen.Enabled and input.KeyCode == Enum.KeyCode.RightControl
-                and not UserInputService:GetFocusedTextBox() then library:Toggle() end
-        end)
+        self:refresh()
     end
     function ui:refresh()
-        if not self.main or library.Unloaded then return end
-        local need = math.max(1, tonumber(CoreFarm.rescans) or 2)
-        local laps = math.min(need, tonumber(CoreFarm.laps) or 0)
-        setText(self.status, S.coreStatusCaption(CoreFarm._statusText))
-        setText(self.progressText, laps .. " / " .. need)
-        setText(self.kept, CoreFarm._keptCount or 0)
-        setText(self.missed, CoreFarm._missedCount or 0)
-        local ratio = laps / need
-        if self.cache.ratio ~= ratio then self.cache.ratio = ratio; self.progressFill.Size = UDim2.fromOffset(430 * ratio, 2) end
-        local enabled = CoreFarm.enabled == true or CoreFarm._leaving == true
-        if self.cache.enabled ~= enabled then self.cache.enabled = enabled; controls.Flags.dtec_core_open:Set(enabled) end
+        if not self.main or library.Unloaded or not S._v3 then return end
+        local cfg=S._v3
+        label(self.status,S.coreStatusCaption(CoreFarm._statusText))
+        label(self.master,S._v3Running and "Stop all" or "Start")
+        local need=CoreFarm.rescans or 2;local laps=math.min(need,CoreFarm.laps or 0)
+        label(self.progressText,laps.." / "..need.." laps");label(self.kept,(CoreFarm._keptCount or 0).." items kept")
+        local ratio=laps/need;if self.cache.ratio~=ratio then self.cache.ratio=ratio;self.progressFill.Size=UDim2.fromOffset(486*ratio,2)end
+        for key,row in pairs(self.toggles)do label(row.button,(cfg[key] and "ON    " or "OFF   ")..row.title);row.button.TextColor3=cfg[key] and C.accent or C.muted end
+        for key,rows in pairs(self.choices or {})do for value,b in pairs(rows)do b.TextColor3=cfg[key]==value and C.accent or C.muted end end
+        for key,rows in pairs(self.multi or {})do for value,b in pairs(rows)do label(b,(cfg[key][value] and "✓  " or "    ")..value);b.TextColor3=cfg[key][value] and C.accent or C.muted end end
+        for key,node in pairs(self.steps or {})do label(node,cfg[key])end
+        for name,row in pairs(self.chestRows)do local on=table.find(CoreFarm.chestTypes,name)~=nil;label(row,(on and "✓  " or "    ")..name);row.TextColor3=on and C.accent or C.muted end
+        local count,capacity=S.coreSackCount();label(self.sack,count and capacity and ("Sack  "..count.." / "..capacity) or "Sack · waiting for counter")
+        label(self.killCount,(S._v3Kills or 0).." confirmed kills");label(self.mined,(S._v3Mined or 0).." ores mined")
+        label(self.configInfo,S._configStatus or "");label(self.queueInfo,S._queueStatus or "Auto execute needs executor teleport support")
+        if self.selected=="Hunt" then
+            local names={All=true}
+            if S._v3Index then for mob in pairs(S._v3Index.mobs)do if mob.Parent then names[S.v3MobName(mob)]=true end end end
+            for name in pairs(cfg.mobs)do names[name]=true end
+            local sorted={};for name in pairs(names)do sorted[#sorted+1]=name end;table.sort(sorted)
+            for _,row in pairs(self.mobRows)do row.Visible=false end
+            for i,name in ipairs(sorted)do
+                local row=self.mobRows[name]
+                if not row then
+                    row=button("Mob_"..name,self.mobPage,0,0,496,28,"");self.mobRows[name]=row
+                    connect(row.Activated,function()
+                        local picked=table.clone(S._v3.mobs)
+                        if name=="All" then picked=picked.All and {} or {All=true} else picked.All=nil;picked[name]=not picked[name] or nil end
+                        S.v3Set("mobs",picked)
+                    end)
+                end
+                row.Visible=true;row.Position=UDim2.fromOffset(0,188+(i-1)*32)
+                label(row,(cfg.mobs[name] and "✓  " or "    ")..name);row.TextColor3=cfg.mobs[name] and C.accent or C.muted
+            end
+            self.mobPage.CanvasSize=UDim2.fromOffset(0,200+#sorted*32)
+        end
+        if cfg.stock or self.selected=="Villages" then
+            local rows=S.v3StockRows()
+            if self.selected=="Villages" then
+                local visible=math.min(80,#rows)
+                label(self.stockInfo,#rows.." loaded stock items · "..(S._v3AmmoBought or 0).." ammo claims · "..(S._v3Spent or 0).." coins reserved / spent · "..S.v3RestockText())
+                for i=1,visible do
+                    local row=rows[i];local node=self.stockLabels[i]
+                    if not node then node=text("StockRow"..i,self.stockParent,4,self.stockY+(i-1)*27,490,25,"");self.stockLabels[i]=node end
+                    node.Visible=true;label(node,row.location.."  /  "..row.name)
+                    node.TextColor3=row.quality>=2 and C.purple or row.quality==1 and C.gold or C.muted
+                end
+                for i=visible+1,#self.stockLabels do self.stockLabels[i].Visible=false end
+                self.stockParent.CanvasSize=UDim2.fromOffset(0,self.stockY+math.max(1,visible)*27+12)
+            end
+        end
     end
-    return controls, library
+    return controls,library
 end
 
 do
@@ -656,6 +672,9 @@ end
 
 function S.unloadAlkaline()
     if S._unloading or S._unloaded then return end
+    pcall(S.v3SaveConfig)
+    pcall(S.v3CancelActivity)
+    S._v3Running=false
     local root = S.getRoot()
     local returnTo = not CoreFarm._teleportPending and game.PlaceId == NA.placeId and S.getDrillReturnCFrame()
     S._unloading, S._unloaded = true, true
@@ -2759,7 +2778,7 @@ function S.holdAutofarmCruise(reason)
 end
 
 function S.isAutofarmCruiseHeld()
-    return (S._finishSettings and S._finishSettings.busy == true) or S._chestInteraction ~= nil
+    return S._activity~=nil or (S._finishSettings and S._finishSettings.busy == true) or S._chestInteraction ~= nil
         or Autofarm.busy == true
         or Autofarm.moving == true
         or Autofarm.miningBusy == true
@@ -3148,9 +3167,13 @@ function S.setAutofarmCameraAssist(enabled)
 end
 
 function S.runAutofarmCycle()
-    if S._chestInteraction or S.autofarmCycleShouldAbort() or CoreFarm._leaving then return end
+    if S._v3AuraBusy or S._chestInteraction or S.autofarmCycleShouldAbort() or CoreFarm._leaving then return end
     if not Services.ToolService or not Services.InteractionService then return end
     if S.autofarmInStartupGrace() then S.ensureAutofarmOrigin(false); return end
+    if S._activity then return end
+    if S._v3 and not CoreFarm._drainingChests and os.clock()>=(S._v3NextJobAt or 0) then
+        if S.v3RunNextJob() then S._v3NextJobAt=os.clock()+2;return end
+    end
     S.coreHoldChestRun()
     S.ensureAutofarmOrigin(false)
     S.syncAutofarmWindowFromDrill()
@@ -3239,7 +3262,7 @@ function S.setAutofarm(enabled, opts)
     S.lockAutofarmHover(true)
 
     State.connections.autofarm = RunService.Heartbeat:Connect(function()
-        if S._chestInteraction or (S._finishSettings and S._finishSettings.busy) then return end
+        if S._activity or S._chestInteraction or (S._finishSettings and S._finishSettings.busy) then return end
         if not Autofarm.enabled then
             return
         end
@@ -3816,7 +3839,7 @@ function S.bindServices()
     local knit = S.getKnit()
     if not knit then return false, "Knit module not found" end
     
-    for _, name in ipairs({ "ToolService", "InteractionService", "TeleportManagerService", "CutSceneService" }) do
+    for _, name in ipairs({ "ToolService", "InteractionService", "TeleportManagerService", "CutSceneService", "ShopService", "DragService", "CurrencyService" }) do
         if not Services[name] then
             local ok, service = pcall(function() return knit.GetService(name) end)
             if ok and service then Services[name] = service end
@@ -3994,18 +4017,14 @@ function S.coreAwait(promise)
 end
 
 function S.coreSaveQueue()
-    
+    if S._v3 then S.v3SaveConfig() end
 end
 
 function S.coreLoadQueue()
-    CoreFarm.enabled, CoreFarm.openAll, CoreFarm._queuedRun = true, true, true
-    CoreFarm.mode, CoreFarm.partySize, CoreFarm.rescans = "Unranked", 1, 2
-    CoreFarm.joinDungeon, CoreFarm.joinMines = false, false
-    CoreFarm.chestTypes = {}
-    for _, label in ipairs(CHEST_TYPE_OPTIONS) do CoreFarm.chestTypes[#CoreFarm.chestTypes + 1] = label end
-    CoreFarm._chestPick = S.chestLabelsFromSaved(CoreFarm.chestTypes)
-    S.trySetControlsFlag("dtec_core_chest_types", CoreFarm._chestPick)
-    CoreFarm._userStop = false
+    S.v3LoadConfig()
+    S._v3Running=S._v3.autoStart
+    S._v3SafeCFrame=S.getRoot() and S.getRoot().CFrame
+    S.trySetControlsFlag("dtec_core_chest_types",CoreFarm.chestTypes)
 end
 
 function S.coreZoneEmpty(zone)
@@ -4267,6 +4286,7 @@ function S.coreRefreshChestPick()
 end
 
 function S.coreHoldChestRun()
+    if S._v3 and not S._v3.chests then return end
     if not (CoreFarm.openAll or CoreFarm._ownedRun) or CoreFarm._leaving then
         return
     end
@@ -4361,6 +4381,7 @@ function S.coreCycleTick()
     if not S._unloaded and S.coreProcessSaveRequest() then return end
     if not S._unloaded and S._uiReady then S.coreMenuRefresh() end
     if S._unloaded or not S._uiReady or S._configLoading or CoreFarm._leaving then return end
+    if S.v3Tick() then return end
     if CoreFarm._userStop then S.coreSetStatus("Stopped"); return end
     if not S.coreWantRun() and not CoreFarm.enabled then return end
     if game.PlaceId == NA.placeId then
@@ -4400,6 +4421,7 @@ end
 
 function S.coreCycleRun()
     if S._unloaded then return false end
+    if S._activity then return true end
     if S._configLoading or not S._uiReady then S.coreSetStatus("Wait: settings"); return false end
     if CoreFarm._leaving then return false end
     if not S.coreWantRun() then S.coreSetStatus(CoreFarm._userStop and "Stopped" or "Off"); return false end
@@ -4467,6 +4489,7 @@ function S.stopCoreChestRun()
         return
     end
     CoreFarm._stopping = true
+    S.v3CancelActivity()
     CoreFarm._drainingChests, CoreFarm._chestQuietSince = false, nil
     CoreFarm._userStop = true
     CoreFarm.enabled, CoreFarm._bootChurchWait = false, false
@@ -4538,6 +4561,7 @@ function S.coreApplyRun()
     CoreFarm.chestTypes = picked
     CoreFarm._chestPick = picked
     CoreFarm._ownedRun = true
+    S._v3Visited=setmetatable({},{__mode="k"})
     CoreFarm._finishGen = (CoreFarm._finishGen or 0) + 1
     CoreFarm._keptCount, CoreFarm._missedCount = 0, 0
     CoreFarm._drainingChests, CoreFarm._chestQuietSince, CoreFarm._chestSummary = false, nil, nil
@@ -4582,7 +4606,7 @@ function S.coreApplyRun()
 end
 
 function S.coreUnstickRun()
-    if CoreFarm._drainingChests then return end
+    if S._activity or CoreFarm._drainingChests then return end
     if S._chestInteraction or (S._finishSettings and S._finishSettings.busy) then return end
     if not (CoreFarm.openAll and CoreFarm._ownedRun) or CoreFarm._leaving or CoreFarm._applying then
         return
@@ -4640,6 +4664,7 @@ function S.coreUnstickRun()
 end
 
 function S.coreFinishActive(gen)
+    if type(gen)=="table" and gen.kind then return S.v3JobActive(gen) end
     return not S._unloading and not S._unloaded and not CoreFarm._userStop
         and CoreFarm._leaving == true and gen == CoreFarm._finishGen
 end
@@ -5266,6 +5291,7 @@ function S.coreFinishAwait(promise, seconds, gen)
 end
 
 function S.coreStandNear(pos, gen)
+    if type(gen)=="table" and gen.kind then return S.v3Move(gen,pos+Vector3.new(0,2.5,3)) end
     if not S.coreFinishActive(gen) then return false end
     local root = S.getRoot()
     if not root then return false end
@@ -6050,7 +6076,12 @@ function S.coreFinishRun(before, gen)
     if not S.coreFinishActive(gen) then return end
     S.coreEquipKeptTools(gen)
     S.coreStopLootWatch()
+    pcall(S.forceReleaseFarmCharacter)
     if not S.coreFinishActive(gen) then return end
+    if S._v3 and not S._v3.church then
+        S.v3Park("Chest farm complete · items collected")
+        return
+    end
     S.notify("Core", "Selected items ready · going to church", 4)
     local church = S.coreFindChurch(gen)
     if not church and S.coreFinishActive(gen) then
@@ -6149,6 +6180,11 @@ function S.coreReturnLobby(before, gen, church)
         S.coreSetStatus(CoreFarm._teleportPending and "Church: teleport pending at server" or "Church: return paused · Retry church return")
         S.notify("Church", "Save return is not confirmed. Keeping your items here; use Retry church return, or Copy Debug for details.", 8)
     end
+    if not CoreFarm._teleportPending and not CoreFarm._teleportStarted then
+        pcall(S.forceReleaseFarmCharacter)
+        local root=S.getRoot();local cf=S.getDrillReturnCFrame() or S._v3SafeCFrame
+        if root and cf then root.CFrame=cf;root.AssemblyLinearVelocity=Vector3.zero end
+    end
     return ok and result == true
 end
 
@@ -6173,21 +6209,16 @@ end
 
 function S.coreMenuSetEnabled(value)
     if S._configLoading then return end
-    if not value then S.stopCoreChestRun(); return end
-    if CoreFarm._leaving then
-        S.notify("Autofarm", "Finishing this run. The cycle continues after the church return.", 4)
-        return
-    end
-    CoreFarm._userStop = false
-    CoreFarm.enabled, CoreFarm.openAll, CoreFarm._queuedRun = true, true, true
-    CoreFarm.mode, CoreFarm.partySize = "Unranked", 1
-    CoreFarm._nextStartAt, CoreFarm._nextLobbyAt = 0, 0
-    S.coreRequestRun()
+    if value then S.v3Start() else S.v3Park("Stopped") end
 end
 
 function S.coreCopyDebug()
     local text = "naturally alkaline v" .. NA.version .. "\nPlace: " .. tostring(game.PlaceId)
         .. "\nStatus: " .. tostring(CoreFarm._statusText or "Starting")
+        .. "\nActivity: " .. tostring(S._activity and S._activity.kind or "idle")
+        .. "\nConfig: " .. tostring(S._configStatus) .. " | " .. tostring(S._queueStatus)
+        .. "\nKills / ores / ammo claims: " .. tostring(S._v3Kills or 0) .. "/" .. tostring(S._v3Mined or 0) .. "/" .. tostring(S._v3AmmoBought or 0)
+        .. "\nShop / drag / currency services: " .. tostring(Services.ShopService~=nil) .. "/" .. tostring(Services.DragService~=nil) .. "/" .. tostring(Services.CurrencyService~=nil)
         .. "\nLaps: " .. tostring(CoreFarm.laps or 0) .. "/" .. tostring(CoreFarm.rescans or 2)
         .. "\nLoot: " .. tostring(CoreFarm._keptCount or 0) .. " collected, " .. tostring(CoreFarm._missedCount or 0) .. " missed"
         .. "\nChests: " .. (CoreFarm._chestSummary and (tostring(CoreFarm._chestSummary.opened) .. " opened, "
@@ -6208,8 +6239,831 @@ function S.buildAutofarmTab()
     ui:refresh()
 end
 
+function S.v3Defaults()
+    return {schema=3, autoStart=true, autoQueue=true, queueMode="Unranked", chests=true, laps=2,
+        chestTypes=table.clone(CHEST_TYPE_OPTIONS), church=true, hunt=false, aura=false, mobs={All=true},
+        mine=false, mines=false, ores={Gold=true,Iron=true}, collect=false, corpses=false, bounties=false,
+        loot={Shards=true,Gear=true,Valuables=true,Ores=true,Scrap=true,Consumables=true},
+        ammoBuy=false, ammo={Pistol=true,Rifle=true,Special=true,Shotgun=true}, stock=true,
+        executeOnTeleport=true, reserveCoins=0, spendLimit=5000, auraRange=24, speed=700}
+end
+
+function S.v3CleanConfig(raw)
+    local cfg=S.v3Defaults()
+    if type(raw)~="table" then return cfg end
+    for key,value in pairs(cfg) do
+        if type(value)=="boolean" and type(raw[key])=="boolean" then cfg[key]=raw[key] end
+    end
+    for key,limits in pairs({laps={1,10},reserveCoins={0,100000000},spendLimit={0,100000000},auraRange={6,60},speed={100,1500}}) do
+        local n=tonumber(raw[key]);if n and n==n and math.abs(n)<math.huge then cfg[key]=math.clamp(math.floor(n),limits[1],limits[2]) end
+    end
+    cfg.queueMode=raw.queueMode=="Ranked" and "Ranked" or "Unranked"
+    for _,key in ipairs({"mobs","ores","loot","ammo"}) do
+        if type(raw[key])=="table" then
+            cfg[key]={};local count=0
+            for name,on in pairs(raw[key]) do
+                if type(name)=="string" and #name<=80 and on==true and count<100 then cfg[key][name]=true;count+=1 end
+            end
+        end
+    end
+    if type(raw.chestTypes)=="table" then
+        local labels=S.chestLabelsFromSaved(raw.chestTypes)
+        if #labels>0 then cfg.chestTypes=labels end
+    end
+    return cfg
+end
+
+function S.v3SaveConfig()
+    if not S._v3 then return false end
+    local cfg=S._v3
+    cfg.laps, cfg.queueMode=CoreFarm.rescans,CoreFarm.mode
+    cfg.chestTypes=S.chestLabelsFromSaved(CoreFarm.chestTypes)
+    if typeof(getgenv)=="function" then getgenv().NATURALLY_ALKALINE_SETTINGS=cfg end
+    if typeof(writefile)~="function" then S._configStatus="Session only · file API unavailable";return false end
+    local ok,err=pcall(function()
+        local json=game:GetService("HttpService"):JSONEncode(cfg)
+        writefile("naturally_alkaline_v3.json",json)
+    end)
+    S._configStatus=ok and "Saved · loads on execution" or "Save failed"
+    if not ok then S.interactionNote("config",tostring(err):sub(1,120)) end
+    return ok
+end
+
+function S.v3LoadConfig()
+    local raw
+    if typeof(readfile)=="function" then
+        local ok,result=pcall(function()return game:GetService("HttpService"):JSONDecode(readfile("naturally_alkaline_v3.json"))end)
+        if ok and type(result)=="table" then raw=result end
+    end
+    if not raw and typeof(getgenv)=="function" then raw=getgenv().NATURALLY_ALKALINE_SETTINGS end
+    S._v3=S.v3CleanConfig(raw)
+    S._configStatus=raw and "Settings loaded" or "Defaults · save to keep changes"
+    CoreFarm.mode,CoreFarm.partySize,CoreFarm.rescans=S._v3.queueMode,1,S._v3.laps
+    CoreFarm.chestTypes=S._v3.chestTypes;CoreFarm._chestPick=table.clone(CoreFarm.chestTypes)
+    CoreFarm.enabled=S._v3.autoStart;CoreFarm._userStop=not S._v3.autoStart
+    CoreFarm.openAll=S._v3.autoStart and S._v3.chests;CoreFarm._queuedRun=CoreFarm.openAll
+    S._finishSettings.autoChurch=S._v3.church
+    Autofarm.tweenSpeed=S._v3.speed
+end
+
+function S.v3QueueLoader()
+    if not S._v3 or not S._v3.executeOnTeleport or S._v3LoaderQueued then return end
+    local queue=queue_on_teleport or queueonteleport or (syn and syn.queue_on_teleport)
+    if typeof(queue)~="function" then S._queueStatus="Auto execute unsupported by executor";return end
+    local loader=[[local run=true
+if type(readfile)=="function" then
+    pcall(function()
+        local cfg=game:GetService("HttpService"):JSONDecode(readfile("naturally_alkaline_v3.json"))
+        if type(cfg)=="table" and cfg.executeOnTeleport==false then run=false end
+    end)
+end
+if run then loadstring(game:HttpGet("https://raw.githubusercontent.com/naturallyalkaline/autofarm-everything/main/main.lua"))() end]]
+    local ok=pcall(queue,loader)
+    S._v3LoaderQueued=ok;S._queueStatus=ok and "Auto execute queued" or "Auto execute failed"
+end
+
+function S.v3Set(key,value)
+    local cfg=S._v3;if not cfg then return end
+    cfg[key]=value
+    if key=="queueMode" then CoreFarm.mode=value end
+    if key=="laps" then CoreFarm.rescans=value end
+    if key=="church" then S._finishSettings.autoChurch=value end
+    if key=="speed" then Autofarm.tweenSpeed=value end
+    if key=="chestTypes" then
+        CoreFarm.chestTypes,CoreFarm._chestPick=value,value;Autofarm.chestTypes=value
+        S.trySetControlsFlag("dtec_core_chest_types",value)
+    end
+    -- A movement setting change cancels the old owner before the next scheduler tick.
+    if key=="chests" then
+        S.v3CancelActivity();S.stopCoreChestRun()
+        if S._v3Running then S.v3Start() end
+    elseif key=="hunt" or key=="mine" or key=="mines" or key=="ammoBuy" or key=="collect" then
+        S.v3CancelActivity()
+    end
+    S.v3SaveConfig();S.v3QueueLoader()
+    if S._farmUi then S._farmUi:refresh() end
+end
+
+function S.v3Start()
+    if S._unloaded then return end
+    S._v3Running=true;S._v3Completed=false;CoreFarm._userStop=false;CoreFarm.enabled=true
+    CoreFarm.openAll=S._v3.chests;CoreFarm._queuedRun=S._v3.chests
+    CoreFarm.mode,CoreFarm.partySize=S._v3.queueMode,1
+    S.trySetControlsFlag("dtec_core_open",true)
+    S._v3Generation=(S._v3Generation or 0)+1
+    S.v3QueueLoader();S.coreSetStatus("Starting")
+end
+
+function S.v3CancelActivity()
+    S._v3Generation=(S._v3Generation or 0)+1
+    local job=S._activity
+    if job then job.cancelled=true;S.v3EndJob(job,S._v3Running and not CoreFarm._userStop and not S._unloaded) end
+end
+
+function S.v3Park(message)
+    S.v3CancelActivity()
+    S._v3Running=false;S._v3Completed=true
+    S.stopCoreChestRun()
+    pcall(S.forceReleaseFarmCharacter)
+    local root=S.getRoot();local cf=S.getDrillReturnCFrame() or S._v3SafeCFrame
+    if root and cf then root.CFrame=cf;root.AssemblyLinearVelocity=Vector3.zero end
+    S.coreSetStatus(message or "Stopped")
+end
+
+function S.v3Token(text)
+    return tostring(text or ""):lower():gsub("[^%w]","")
+end
+
+function S.v3AliveMob(mob)
+    if not mob or not mob.Parent or not mob:IsA("Model") or Players:GetPlayerFromCharacter(mob) then return false end
+    local faction=S.v3Token(mob:GetAttribute("NpcFaction"))
+    if faction:find("friendly",1,true) or faction=="villager" then return false end
+    if mob==LocalPlayer.Character or mob:GetAttribute("NpcFaction")=="FriendlyCompanion"
+        or mob:GetAttribute("Friendly")==true or mob:GetAttribute("Hostile")==false then return false end
+    local h=mob:FindFirstChildOfClass("Humanoid")
+    return h~=nil and h.Health>0
+end
+
+function S.v3MobName(mob)
+    return tostring(mob:GetAttribute("RealName") or mob:GetAttribute("NpcType") or mob.Name)
+end
+
+function S.v3SelectedMob(mob)
+    local selected=S._v3.mobs
+    return selected.All==true or selected[S.v3MobName(mob)]==true
+end
+
+function S.v3OreType(ore)
+    local value=ore:GetAttribute("SessionOreType") or ore:GetAttribute("SessionOreModel") or ore:GetAttribute("Ore_Model") or ore.Name
+    local token=S.v3Token(value)
+    for _,name in ipairs({"HeartGem","Emerald","Diamond","Ruby","Gold","Iron","Copper","Coal"}) do
+        if token:find(S.v3Token(name),1,true) then return name end
+    end
+    return tostring(value)
+end
+
+function S.v3OreHealth(ore)
+    local h=ore and ore:FindFirstChild("Health")
+    if h and (h:IsA("NumberValue") or h:IsA("IntValue")) then return tonumber(h.Value) end
+    return ore and tonumber(ore:GetAttribute("Health"))
+end
+
+function S.v3OreAlive(ore)
+    if not ore or not ore.Parent or ore:GetAttribute("OreLoaded")==false then return false end
+    local hp=S.v3OreHealth(ore);if hp then return hp>0 end
+    local rock=ore:FindFirstChild("Rock") or ore:FindFirstChild("Ore")
+    return rock~=nil and rock:IsA("BasePart") and rock.Transparency<0.98
+end
+
+function S.v3IndexRecord(inst,index)
+    if not inst or not inst.Parent or not inst:IsDescendantOf(Workspace) then return end
+    local node=inst
+    if inst:IsA("Humanoid") then node=inst.Parent end
+    if CollectionService:HasTag(inst,"NpcManager") and not inst:IsA("Model") then node=inst:FindFirstAncestorOfClass("Model") end
+    if not node then return end
+    if node:IsA("Model") then
+        local parent=node.Parent
+        local npcParent=parent and (parent.Name=="Npc" or parent.Name=="NPC" or parent.Name=="Mobs")
+        if (npcParent or CollectionService:HasTag(node,"NpcManager") or CollectionService:HasTag(inst,"NpcManager"))
+            and S.v3AliveMob(node) then index.mobs[node]=true end
+        if node.Name=="Mineshaft" or node.Name=="VoidMineshaft" or (node.Name=="Cave" and node:FindFirstChild("Gate_Cave"))
+            or CollectionService:HasTag(node,"Mineshaft") then index.mines[node]=true end
+        local n=node.Name
+        if n=="MinerTown" or n=="BountyCamp" or n=="TradingCampTutorial" or n:match("^CampTier")
+            or n:find("Fortress",1,true) or CollectionService:HasTag(node,"Village") then index.villages[node]=true end
+    end
+    if node:IsA("Model") or node:IsA("BasePart") then
+        if node:GetAttribute("SessionOreType") or node:GetAttribute("SessionOreModel") or node:GetAttribute("Ore_Model")
+            or CollectionService:HasTag(node,"Ore")
+            or ((node.Name:match("^OreNode") or node.Name:match("^WormNode")) and node:FindFirstChild("Health")) then index.ores[node]=true end
+        local items=Workspace:FindFirstChild("Items")
+        local item=node
+        while item.Parent and item.Parent~=items and item.Parent~=Workspace and item.Parent:IsA("Model") do item=item.Parent end
+        if items and item.Parent==items then index.loot[item]=true end
+        if CollectionService:HasTag(node,"ShopItem") then index.stock[node]=true end
+        if CollectionService:HasTag(node,"Corpse") or CollectionService:HasTag(node,"Bounty") then index.loot[node]=true end
+    end
+    if node:IsA("BasePart") and CollectionService:HasTag(node,"BuyPart") then index.buy[node]=true end
+end
+
+function S.v3EnsureIndex()
+    if S._v3Index then return S._v3Index end
+    local index={queue={},head=1,tail=0,pending=setmetatable({},{__mode="k"}),running=false,ready=false}
+    for _,key in ipairs({"mobs","ores","mines","villages","stock","loot","buy"}) do index[key]=setmetatable({},{__mode="k"}) end
+    S._v3Index=index
+    local enqueue
+    enqueue=function(inst,expand)
+        if S._unloaded or not inst or index.pending[inst] then return end
+        index.pending[inst]=true;index.tail+=1;index.queue[index.tail]={inst,expand}
+        if index.running then return end
+        index.running=true
+        task.defer(function()
+            while not S._unloaded and index.head<=index.tail do
+                local began,count=os.clock(),0
+                repeat
+                    local entry=index.queue[index.head];index.queue[index.head]=nil;index.head+=1
+                    local obj=entry[1];index.pending[obj]=nil
+                    if obj==Workspace or (obj.Parent and obj:IsDescendantOf(Workspace)) then
+                        pcall(S.v3IndexRecord,obj,index)
+                        local parent=obj.Parent
+                        if parent and parent~=Workspace then pcall(S.v3IndexRecord,parent,index) end
+                        if entry[2] and not (obj:IsA("Model") and Players:GetPlayerFromCharacter(obj))
+                            and (obj==Workspace or obj:IsA("Model") or obj:IsA("Folder")) then
+                            for _,child in ipairs(obj:GetChildren()) do
+                                if child:IsA("Model") or child:IsA("Folder") or child:IsA("Humanoid")
+                                    or (child:IsA("BasePart") and (obj.Name=="Items" or child.Name:find("Ore",1,true)
+                                    or CollectionService:HasTag(child,"Ore") or CollectionService:HasTag(child,"BuyPart"))) then enqueue(child,true) end
+                            end
+                        end
+                    end
+                    count+=1
+                until index.head>index.tail or count>=40 or os.clock()-began>=0.002
+                if index.head<=index.tail then task.wait(0.04) end
+            end
+            index.running=false;index.ready=true
+            if index.head>index.tail then index.queue={};index.head=1;index.tail=0 end
+        end)
+    end
+    State.connections.v3Added=Workspace.DescendantAdded:Connect(function(obj)
+        if obj:IsA("Model") or obj:IsA("Humanoid") or obj:IsA("Folder") or obj:IsA("ProximityPrompt")
+            or (obj:IsA("BasePart") and obj.Parent and obj.Parent.Name=="Items") then enqueue(obj,false) end
+    end)
+    State.connections.v3Removed=Workspace.DescendantRemoving:Connect(function(obj)
+        for _,key in ipairs({"mobs","ores","mines","villages","stock","loot","buy"}) do index[key][obj]=nil end
+    end)
+    for _,tag in ipairs({"NpcManager","Ore","Mineshaft","Village","ShopItem","Corpse","Bounty","BuyPart"}) do
+        State.connections["v3Tag"..tag]=CollectionService:GetInstanceAddedSignal(tag):Connect(function(obj)
+            if tag=="ShopItem" and S._v3PurchaseSent then S._v3PurchaseSent[obj]=nil end
+            enqueue(obj,false)
+        end)
+        for _,obj in ipairs(CollectionService:GetTagged(tag)) do enqueue(obj,false) end
+    end
+    enqueue(Workspace,true)
+    return index
+end
+
+function S.v3JobActive(job)
+    return job~=nil and S._activity==job and not job.cancelled and not S._unloaded and not CoreFarm._userStop
+        and job.generation==(S._v3Generation or 0) and job.character==LocalPlayer.Character
+        and S.getRoot()==job.root and job.root.Parent~=nil and (not S.getHumanoid() or S.getHumanoid().Health>0)
+end
+
+function S.v3BeginJob(kind,target)
+    if S._activity or S._v3AuraBusy or S._chestInteraction or CoreFarm._leaving or S._unloaded or CoreFarm._userStop then return nil end
+    local root=S.getRoot();if not root then return nil end
+    local job={kind=kind,target=target,root=root,character=LocalPlayer.Character,generation=S._v3Generation or 0,
+        saved=root.CFrame,noclip=State.noclip,humanoid=S.getHumanoid()}
+    job.platform=job.humanoid and job.humanoid.PlatformStand
+    root.Anchored=false
+    S._activity=job
+    job.hold=root.CFrame
+    S.disconnectAll("v3Hold")
+    State.connections.v3Hold=RunService.Heartbeat:Connect(function()
+        if S.v3JobActive(job) and job.hold then
+            if job.allowTransition and (root.Position-job.hold.Position).Magnitude>20 then job.hold=nil;return end
+            root.CFrame=job.hold;root.AssemblyLinearVelocity=Vector3.zero;root.AssemblyAngularVelocity=Vector3.zero
+        end
+    end)
+    S.lockAutofarmHover(false);S.ensureAutofarmAntiFall(false)
+    if not State.noclip then S.setNoclip(true) end
+    if job.humanoid then job.humanoid.Sit=false;job.humanoid.PlatformStand=true end
+    return job
+end
+
+function S.v3Move(job,pos)
+    if not S.v3JobActive(job) or typeof(pos)~="Vector3" or pos.X~=pos.X or pos.Y~=pos.Y or pos.Z~=pos.Z then return false end
+    job.hold=nil
+    local delta=pos-job.root.Position
+    local distance=delta.Magnitude
+    local deadline=os.clock()+math.min(14,distance/math.max(100,S._v3.speed)+3)
+    while S.v3JobActive(job) and distance>3 and os.clock()<deadline do
+        local step=math.min(distance,math.max(100,S._v3.speed)*0.05)
+        local nextPos=job.root.Position+delta.Unit*step
+        job.root.CFrame=S.safeLookAt(nextPos,pos) or CFrame.new(nextPos)
+        job.root.AssemblyLinearVelocity=Vector3.zero;job.root.AssemblyAngularVelocity=Vector3.zero
+        task.wait(0.05)
+        delta=pos-job.root.Position;distance=delta.Magnitude
+    end
+    if S.v3JobActive(job) then job.hold=job.root.CFrame end
+    return S.v3JobActive(job) and distance<=5
+end
+
+function S.v3EndJob(job,resume)
+    if S._activity~=job then return end
+    S._activity=nil
+    S.disconnectAll("v3Hold")
+    S.clearDragTarget();S.clearMineHoldPin();Autofarm._gatePinY=nil
+    if job.prompt then pcall(function()job.prompt:InputHoldEnd()end);job.prompt=nil end
+    if job.character~=LocalPlayer.Character or job.root~=S.getRoot() then return end
+    if job.root.Parent then
+        job.root.AssemblyLinearVelocity=Vector3.zero;job.root.AssemblyAngularVelocity=Vector3.zero
+        if resume and not S._unloaded and not CoreFarm._userStop and Autofarm.enabled then
+            S.setAutofarmPose(Autofarm.distance or 0)
+            S.ensureAutofarmAntiFall(true);S.lockAutofarmHover(true)
+        elseif not CoreFarm._teleportPending then
+            job.root.CFrame=S.getDrillReturnCFrame() or job.saved
+        end
+    end
+    if job.humanoid and job.humanoid.Parent then job.humanoid.PlatformStand=(resume and Autofarm.enabled) or job.platform or false end
+    if not job.noclip and not Autofarm.enabled then S.setNoclip(false) end
+end
+
+function S.v3Tool(kind)
+    local best,score=nil,-math.huge
+    for _,tool in ipairs(S.hotbarTools()) do
+        local cat=S.v3Token(S.itemCategoryKey(tool));local n=S.v3Token(tool.Name)
+        local pick=cat=="pickaxe" or n:find("pickaxe",1,true)~=nil
+        local sword=cat=="sword" or n:find("sword",1,true)~=nil
+        local gun=cat=="gun" or cat=="primaryweapon" or cat=="secondaryweapon" or tool:GetAttribute("Ammo")~=nil
+        local ammo=tonumber(tool:GetAttribute("Ammo"))
+        if (kind=="mine" and pick) or (kind=="combat" and (sword or (gun and (ammo==nil or ammo>0)))) then
+            local damage=(kind=="mine" and S.getWorldGearScore(tool) or S.getToolDamage(tool))
+            if damage>score then best,score=tool,damage end
+        end
+    end
+    return best
+end
+
+function S.v3Equip(tool,job)
+    if not tool or not Services.ToolService or (job and not S.v3JobActive(job)) then return false end
+    if tool.Parent==LocalPlayer.Character then return true end
+    local ok=pcall(function()Services.ToolService:EquipTool(tool)end)
+    if not ok then return false end
+    local deadline=os.clock()+0.9
+    while not S._unloaded and (not job or S.v3JobActive(job)) and os.clock()<deadline do
+        if tool.Parent==LocalPlayer.Character then return true end
+        task.wait(0.06)
+    end
+    return false
+end
+
+function S.v3Attack(targets,job)
+    if #targets==0 or not Services.ToolService or not Services.ToolService.Update then return false end
+    if S._chestInteraction or CoreFarm._leaving or (S._activity and S._activity~=job) then return false end
+    local tool=S.v3Tool("combat");if not S.v3Equip(tool,job) then return false end
+    if (job and not S.v3JobActive(job)) or S._chestInteraction or CoreFarm._leaving or (S._activity and S._activity~=job) then return false end
+    local now=os.clock();local delay=math.clamp(tonumber(tool:GetAttribute("AttackCooldown")) or tonumber(tool:GetAttribute("Cooldown")) or 0.5,0.2,3)
+    if now<(S._v3AttackAt or 0) then return false end
+    S._v3AttackAt=now+delay
+    local name=S.v3Token(tool.Name);local category=S.v3Token(S.itemCategoryKey(tool));local gun=tool:GetAttribute("Ammo")~=nil or category=="gun" or category=="primaryweapon" or category=="secondaryweapon"
+    local valid={};local root=S.getRoot();if not root then return false end
+    local range=gun and 100 or S._v3.auraRange
+    for _,mob in ipairs(targets) do
+        local pos=S.getInstancePosition(mob)
+        if #valid<8 and S.v3AliveMob(mob) and S.v3SelectedMob(mob) and pos and (pos-root.Position).Magnitude<=range then valid[#valid+1]=mob end
+    end
+    if #valid==0 then return false end
+    return pcall(function()
+        if not gun then Services.ToolService.Update:Fire({"Swing",valid});return end
+        local mob=valid[1];local part=mob.PrimaryPart or mob:FindFirstChild("HumanoidRootPart") or mob:FindFirstChildWhichIsA("BasePart",true)
+        if not part then return end
+        local start=root.Position+Vector3.new(0,1.5,0);local finish=part.Position
+        if name:find("shotgun",1,true) then Services.ToolService.Update:Fire({"Shoot",{{Start=start,EndPos=finish,HeadShot=false}}})
+        else Services.ToolService.Update:Fire({"Shoot",part,false,start,finish,(finish-start).Magnitude}) end
+    end)
+end
+
+function S.v3Hunt(job,mob)
+    local humanoid=mob:FindFirstChildOfClass("Humanoid");if not humanoid then return end
+    local hp,lastChange=humanoid.Health,os.clock();local deadline=os.clock()+35
+    while S.v3JobActive(job) and S._v3.hunt and S.v3AliveMob(mob) and os.clock()<deadline do
+        local pos=S.getInstancePosition(mob);if not pos or not S.v3Move(job,pos+Vector3.new(0,5,0)) then break end
+        S.coreSetStatus("Hunt · "..S.v3MobName(mob))
+        if not S.v3Tool("combat") then S.coreSetStatus("Hunt · equip a sword or loaded gun");break end
+        S.v3Attack({mob},job);task.wait(0.2)
+        if humanoid.Health~=hp then hp,lastChange=humanoid.Health,os.clock() end
+        if os.clock()-lastChange>8 then break end
+    end
+    if humanoid.Health<=0 then S._v3Kills=(S._v3Kills or 0)+1 end
+end
+
+function S.v3MineOre(job,ore)
+    if not Services.ToolService or not Services.ToolService.Update then S.coreSetStatus("Mining · waiting for tool service");return end
+    if not S.v3OreAlive(ore) or not S._v3.ores[S.v3OreType(ore)] then return end
+    local pos=S.getInstancePosition(ore);if not pos then return end
+    if not S.v3Move(job,pos+Vector3.new(0,3,0)) then return end
+    local tool=S.v3Tool("mine");if not S.v3Equip(tool,job) then S.coreSetStatus("Mining · pickaxe required");return end
+    local hp,lastChange=S.v3OreHealth(ore),os.clock();local deadline=os.clock()+30
+    while S.v3JobActive(job) and S._v3.mine and S.v3OreAlive(ore) and os.clock()<deadline do
+        S.coreSetStatus("Mining · "..S.v3OreType(ore))
+        if tool.Parent~=job.character and not S.v3Equip(tool,job) then break end
+        Services.ToolService.Update:Fire({"Swing",{ore}});task.wait(0.5)
+        local current=S.v3OreHealth(ore)
+        if current~=hp then hp,lastChange=current,os.clock() end
+        if os.clock()-lastChange>8 then break end
+    end
+    if S.v3JobActive(job) and not S.v3OreAlive(ore) then
+        S._v3Mined=(S._v3Mined or 0)+1
+        task.wait(0.35)
+        S.v3CollectNearby(job,pos,32,true)
+    end
+end
+
+function S.v3MineVisit(job,mine)
+    local hit=mine:FindFirstChild("EntranceHitbox",true)
+    if not hit or not hit:IsA("BasePart") then S.coreSetStatus("Mine · entrance not loaded");return end
+    if not S.v3Move(job,hit.Position+hit.CFrame.LookVector*6) then return end
+    pcall(S.requestStreamAround,hit.Position,1)
+    if not S.v3JobActive(job) then return end
+    local entered=false;local before=job.root.Position
+    job.allowTransition=true
+    for _,prompt in ipairs(S.collectProximityPrompts(mine)) do
+        local text=S.v3Token(prompt.ActionText)
+        if prompt.Enabled and text:find("enter",1,true) and not text:find("exit",1,true) then
+            local pos=S.getPromptWorldPosition(prompt)
+            if pos and S.v3Move(job,pos+Vector3.new(0,2,0)) then
+                local deadline=os.clock()+math.min(30,(tonumber(prompt.HoldDuration) or 0)+0.3)
+                job.prompt=prompt
+                prompt:InputHoldBegin()
+                while S.v3JobActive(job) and os.clock()<deadline do task.wait(0.08) end
+                pcall(function()prompt:InputHoldEnd()end)
+                job.prompt=nil
+            end
+            break
+        end
+    end
+    job.hold=nil
+    for step=0,12 do
+        if not S.v3JobActive(job) then return end
+        if (job.root.Position-before).Magnitude>25 then entered=true;break end
+        local pos=hit.Position+hit.CFrame.LookVector*(6-step)
+        job.root.CFrame=CFrame.new(pos);job.root.AssemblyLinearVelocity=Vector3.zero
+        task.wait(0.1)
+    end
+    if not S.v3JobActive(job) then return end
+    pcall(S.requestStreamAround,job.root.Position,1)
+    job.allowTransition=false
+    job.hold=job.root.CFrame
+    local index=S.v3EnsureIndex();local origin=job.root.Position
+    local attempted={};local deadline=os.clock()+90;local quiet=0
+    while S.v3JobActive(job) and S._v3.mines and os.clock()<deadline do
+        local best,distance=nil,math.huge
+        for ore in pairs(index.ores) do
+            local pos=S.getInstancePosition(ore)
+            if not attempted[ore] and S.v3OreAlive(ore) and S._v3.ores[S.v3OreType(ore)] and pos
+                and (ore:IsDescendantOf(mine) or (entered and (pos-origin).Magnitude<1200)) then
+                local d=(pos-job.root.Position).Magnitude;if d<distance then best,distance=ore,d end
+            end
+        end
+        if not best then
+            quiet+=1
+            if quiet>=4 then break end
+            pcall(S.requestStreamAround,origin-hit.CFrame.LookVector*(quiet*100),0.8)
+            task.wait(0.4)
+        else
+            quiet=0
+            attempted[best]=true;S.v3MineOre(job,best)
+        end
+    end
+    -- Job cleanup returns to the farm route; no stale interior pin is retained.
+end
+
+function S.v3LootKind(item)
+    if not item or not item.Parent or S.isHardExcluded(item) or S.isDiscardedLoot(item)
+        or CollectionService:HasTag(item,"ShopItem") then return nil end
+    local name=S.v3Token(item.Name);local category=S.v3Token(S.itemCategoryKey(item))
+    if name:find("ammo",1,true) or category=="ammo" or category=="ammunition" then return nil end
+    if item:GetAttribute("Bounty")==true or (tonumber(item:GetAttribute("BountyValue")) or 0)>0 or CollectionService:HasTag(item,"Bounty") then return "Bounties" end
+    if category=="corpse" or name:find("corpse",1,true) or CollectionService:HasTag(item,"Corpse") then return "Corpses" end
+    if category=="ore" or category=="bar" then return "Ores" end
+    local kind=S.coreKeepKind(item)
+    if kind=="Shard" then return "Shards" end
+    if kind=="Armor" or kind=="Tool" then return "Gear" end
+    if kind=="Valuable" then return "Valuables" end
+    if category=="ore" or category=="bar" or name:find("ore",1,true) then return "Ores" end
+    if category=="consumable" or name:find("potion",1,true) or name:find("medkit",1,true) then return "Consumables" end
+    if category=="scrap" or name:find("scrap",1,true) then return "Scrap" end
+    return "Other"
+end
+
+function S.v3SackPickup(job,item)
+    local before,capacity=S.coreSackCount()
+    if before==nil then S.coreSetStatus("Collection · waiting for sack counter");return false end
+    if capacity and before>=capacity then S.coreSetStatus("Sack full · "..before.." / "..capacity);return false end
+    local bag
+    for _,tool in ipairs(S.hotbarTools()) do if S.isItemBagTool(tool) then bag=tool;break end end
+    if not S.v3Equip(bag,job) or not S.v3JobActive(job) or not item.Parent then return false end
+    for _=1,2 do
+        if not S.v3JobActive(job) or not item.Parent then return false end
+        Services.ToolService.Update:Fire({"Pickup",item})
+        local deadline=os.clock()+1.1
+        while S.v3JobActive(job) and os.clock()<deadline do
+            local count=S.coreSackCount();if count and count>before then return true end
+            task.wait(0.1)
+        end
+    end
+    return false
+end
+
+function S.v3CollectOne(job,item)
+    local kind=S.v3LootKind(item);if not kind then return false end
+    local pos=S.getItemPosition(item) or S.getInstancePosition(item)
+    if not pos or not S.v3Move(job,pos+Vector3.new(0,3,0)) then return false end
+    if kind=="Gear" or kind=="Shards" then
+        local keepKind,tier=S.coreKeepKind(item)
+        local entry={item=item,name=item.Name,kind=keepKind,tier=tier,pos=pos,keys=S.coreItemKeys(item)}
+        if not entry.kind then return false end
+        -- Reuse the tested armor/hotbar verification without creating a church finish.
+        return S.coreCollectKeptItem(entry,job)
+    end
+    return S.v3SackPickup(job,item)
+end
+
+function S.v3CollectNearby(job,pos,range,oresOnly)
+    local current,capacity=S.coreSackCount();if current and capacity and current>=capacity then return end
+    local index=S.v3EnsureIndex();local list={}
+    for item in pairs(index.loot) do
+        local point=S.getItemPosition(item);local kind=S.v3LootKind(item)
+        if kind and point and (point-pos).Magnitude<=range and (not oresOnly or kind=="Ores") then list[#list+1]=item end
+    end
+    for i=1,math.min(16,#list) do if not S.v3JobActive(job) then return end;S.v3CollectOne(job,list[i]);task.wait(0.15) end
+end
+
+function S.v3AmmoType(item)
+    local name=S.v3Token(item:GetAttribute("AmmoType") or item.Name)
+    if name:find("revolver",1,true) and name:find("ammo",1,true) then return "Pistol" end
+    if not name:find("ammo",1,true) and not name:find("shell",1,true) and item:GetAttribute("AmmoType")==nil then return nil end
+    for _,kind in ipairs({"Pistol","Rifle","Special","Shotgun"}) do if name:find(kind:lower(),1,true) then return kind end end
+    return nil
+end
+
+function S.v3StockQuality(item)
+    local n=S.v3Token(tostring(item:GetAttribute("DisplayName") or item.Name)..tostring(item:GetAttribute("Rarity") or ""))
+    if n:find("blackhole",1,true) then return 3 end
+    if n:find("phoenix",1,true) or n:find("mythic",1,true) or n:find("king",1,true) then return 2 end
+    if n:find("void",1,true) or n:find("legendary",1,true) then return 1 end
+    return 0
+end
+
+function S.v3StockRows()
+    local rows={};local index=S.v3EnsureIndex()
+    S.v3RestockText()
+    S._v3StockSeen=S._v3StockSeen or setmetatable({},{__mode="k"})
+    for item in pairs(index.stock) do
+        if item.Parent and CollectionService:HasTag(item,"ShopItem") and item:IsDescendantOf(Workspace) then
+            local quality=S.v3StockQuality(item)
+            local place=item:FindFirstAncestor("Shop")
+            local village=item.Parent
+            while village and village~=Workspace and not index.villages[village] do village=village.Parent end
+            local location=village and village~=Workspace and village.Name or (place and place.Parent and place.Parent.Name) or "Village"
+            rows[#rows+1]={item=item,name=tostring(item:GetAttribute("DisplayName") or item.Name),location=location,quality=quality}
+            if S._v3.stock and quality>=2 and S._v3StockSeen[item]~=(tostring(item.Name)..tostring(S._v3RestockEnd or "")) then
+                S._v3StockSeen[item]=tostring(item.Name)..tostring(S._v3RestockEnd or "");S.notify("Village stock",location.." · "..rows[#rows].name,7)
+            end
+        end
+    end
+    table.sort(rows,function(a,b)if a.quality~=b.quality then return a.quality>b.quality end;return a.location..a.name<b.location..b.name end)
+    return rows
+end
+
+function S.v3BuyPart(item)
+    local pos=S.getItemPosition(item);if not pos then return nil end
+    local best,distance=nil,120
+    for part in pairs(S.v3EnsureIndex().buy) do
+        if part.Parent and part:IsDescendantOf(Workspace) then
+            local d=(part.Position-pos).Magnitude
+            if d<distance then best,distance=part,d end
+        end
+    end
+    return best
+end
+
+function S.v3Wallet()
+    for _,name in ipairs({"Coins","Money","Cash"}) do local n=tonumber(LocalPlayer:GetAttribute(name));if n then return n end end
+    if Services.CurrencyService and os.clock()>=(S._v3WalletAt or 0) then
+        S._v3WalletAt=os.clock()+1.5
+        local ok,reply=pcall(function()return Services.CurrencyService:GetCurrency()end)
+        if ok then
+            local done,value=S.v3Await(reply,1.2,S._activity)
+            if done and tonumber(value) then S._v3Wallet=tonumber(value);S._v3WalletSeen=os.clock() end
+        end
+    end
+    if S._v3WalletSeen and os.clock()-S._v3WalletSeen<4 then return S._v3Wallet end
+    return nil
+end
+
+function S.v3AmmoCount(kind)
+    for _,name in ipairs({kind.."Ammo",kind.."Ammunition","Ammo"..kind}) do
+        local n=tonumber(LocalPlayer:GetAttribute(name));if n then return n end
+    end
+    local total=0;local found=false
+    for _,tool in ipairs(S.hotbarTools()) do
+        if S.v3AmmoType(tool)==kind then total+=tonumber(tool:GetAttribute("ReserveAmmo")) or tonumber(tool:GetAttribute("Amount")) or tonumber(tool:GetAttribute("Count")) or tonumber(tool:GetAttribute("Ammo")) or 1;found=true end
+    end
+    return found and total or nil
+end
+
+function S.v3BuyAmmo(job,item)
+    local kind=S.v3AmmoType(item);if not kind or not S._v3.ammo[kind] or not S._v3.ammoBuy then return end
+    local buy=S.v3BuyPart(item);if not buy then S.coreSetStatus("Ammo · register not loaded");return end
+    local price=tonumber(item:GetAttribute("Price")) or tonumber(item:GetAttribute("Cost")) or tonumber(item:GetAttribute("Value"))
+    local wallet=S.v3Wallet();local spent=S._v3Spent or 0
+    if not price or price<0 or not wallet then S.coreSetStatus("Ammo · waiting for price / balance");return end
+    if wallet-price<S._v3.reserveCoins or spent+price>S._v3.spendLimit then S.coreSetStatus("Ammo · spending limit / coin reserve");return end
+    local pos=S.getItemPosition(item);if not pos or not S.v3Move(job,pos+Vector3.new(0,3,0)) then return end
+    if not Services.DragService or not Services.ShopService then S.connectServicesAsync();S.coreSetStatus("Ammo · waiting for shop / drag service");return end
+    local knit=S.getKnit();local drag
+    if knit then pcall(function()drag=knit.GetController("DragController")end) end
+    if not drag then return end
+    local beforeAmmo=S.v3AmmoCount(kind)
+    local ok,result=pcall(function()
+        Services.ToolService:UnequipTool()
+        Services.DragService:Request(item)
+        if drag.TryLockTarget then drag:TryLockTarget(item) end
+        local deadline=os.clock()+1.4
+        while S.v3JobActive(job) and os.clock()<deadline and drag.LockedTarget~=item do task.wait(0.08) end
+        if not S.v3JobActive(job) or drag.LockedTarget~=item then return false end
+        if not S.v3Move(job,buy.Position+Vector3.new(0,4,3)) then return false end
+        local cf=buy.CFrame*CFrame.new(0,buy.Size.Y*0.5+0.7,0)
+        if not drag.MainAttach then return false end
+        drag.MainAttach.WorldCFrame=cf
+        if item:IsA("Model") then item:PivotTo(cf) elseif item:IsA("BasePart") then item.CFrame=cf end
+        task.wait(0.2)
+        if not S.v3JobActive(job) then return false end
+        Services.DragService:Weld(item)
+        task.wait(0.3)
+        if not S.v3JobActive(job) then return false end
+        local point=S.getItemPosition(item)
+        if not point or (point-buy.Position).Magnitude>10 then return false end
+        if drag.ReleaseLockedTarget then drag:ReleaseLockedTarget() end
+        Services.DragService:Cancel()
+        if not S.v3JobActive(job) then return false end
+        -- Exactly one purchase request. A timeout never automatically repeats a debit.
+        S._v3PurchaseSent=S._v3PurchaseSent or setmetatable({},{__mode="k"})
+        S._v3PurchaseSent[item]=true
+        S._v3Spent=spent+price
+        local reply=Services.ShopService:Buy(buy)
+        local acknowledged,value=S.v3Await(reply,2,job)
+        local purchaseOK=acknowledged and value==true
+        local deadline=os.clock()+3
+        while S.v3JobActive(job) and os.clock()<deadline do
+            local afterAmmo=S.v3AmmoCount(kind)
+            if afterAmmo and beforeAmmo and afterAmmo>beforeAmmo then return true end
+            local money=S.v3Wallet()
+            if item.Parent and (purchaseOK or not CollectionService:HasTag(item,"ShopItem")) then
+                if purchaseOK or (money and money<wallet) then
+                    local claimed,claimReply=S.v3Await(Services.InteractionService:Interact(item),1,job)
+                    if claimed and claimReply==true and S.v3JobActive(job) then return true end
+                    local claimUntil=os.clock()+2
+                    while S.v3JobActive(job) and os.clock()<claimUntil do
+                        local count=S.v3AmmoCount(kind)
+                        if count and (beforeAmmo==nil or count>beforeAmmo) then return true end
+                        task.wait(0.1)
+                    end
+                    S.coreSetStatus("Ammo purchased · claim not confirmed");return false
+                end
+            end
+            task.wait(0.1)
+        end
+        S.coreSetStatus("Ammo · purchase not confirmed; no automatic rebuy")
+        return false
+    end)
+    pcall(function()if drag.ReleaseLockedTarget then drag:ReleaseLockedTarget() end;Services.DragService:Cancel()end)
+    if ok and result then S._v3AmmoBought=(S._v3AmmoBought or 0)+1 end
+    if not ok then S.interactionNote("ammo purchase",tostring(result):sub(1,140)) end
+end
+
+function S.v3ChooseJob()
+    local index=S.v3EnsureIndex();local root=S.getRoot();if not root then return nil end
+    S._v3Visited=S._v3Visited or setmetatable({},{__mode="k"})
+    local candidates={}
+    local function add(kind,item,delay)
+        if not item.Parent or os.clock()<(S._v3Visited[item] or 0) then return end
+        local pos=S.getInstancePosition(item);if not pos then return end
+        if (pos-root.Position).Magnitude>8000 then return end
+        candidates[#candidates+1]={kind=kind,target=item,distance=(pos-root.Position).Magnitude,delay=delay,
+            priority=kind=="collect" and (S.v3LootKind(item)=="Shards" and 2 or S.v3LootKind(item)=="Gear" and 1 or 0) or 0}
+    end
+    if S._v3.hunt then for mob in pairs(index.mobs) do if S.v3AliveMob(mob) and S.v3SelectedMob(mob) then add("hunt",mob,12) end end end
+    if S._v3.mine then
+        for ore in pairs(index.ores) do
+            local inside=false;local ancestor=ore.Parent
+            while ancestor and ancestor~=Workspace do
+                if index.mines[ancestor] then inside=true;break end
+                ancestor=ancestor.Parent
+            end
+            if not inside and S.v3OreAlive(ore) and S._v3.ores[S.v3OreType(ore)] then add("mine",ore,20) end
+        end
+        if S._v3.mines then for mine in pairs(index.mines) do add("mines",mine,120) end end
+    end
+    if S._v3.ammoBuy then
+        for item in pairs(index.stock) do
+            local kind=S.v3AmmoType(item)
+            if CollectionService:HasTag(item,"ShopItem") and kind and S._v3.ammo[kind] and not (S._v3PurchaseSent and S._v3PurchaseSent[item]) then add("ammo",item,15) end
+        end
+        -- Visit unloaded settlements to stream stock. The live index receives it.
+        for village in pairs(index.villages) do add("village",village,300) end
+    end
+    if S._v3.collect or S._v3.corpses or S._v3.bounties then
+        local count,capacity=S.coreSackCount();local full=count and capacity and count>=capacity
+        for item in pairs(index.loot) do
+            local kind=S.v3LootKind(item)
+            if kind and ((S._v3.collect and S._v3.loot[kind]) or (kind=="Corpses" and S._v3.corpses) or (kind=="Bounties" and S._v3.bounties))
+                and (not full or kind=="Shards" or kind=="Gear") then add("collect",item,15) end
+        end
+    end
+    -- Round-robin job types, then nearest target: a respawning mob cannot starve mines/shops.
+    local order={"hunt","mine","mines","ammo","village","collect"}
+    for offset=1,#order do
+        local slot=((S._v3JobCursor or 0)+offset-1)%#order+1
+        local best
+        for _,entry in ipairs(candidates) do if entry.kind==order[slot] and (not best or entry.priority>best.priority or (entry.priority==best.priority and entry.distance<best.distance)) then best=entry end end
+        if best then S._v3JobCursor=slot;return best end
+    end
+    return nil
+end
+
+function S.v3RunNextJob()
+    if S._activity or S._chestInteraction or CoreFarm._leaving or CoreFarm._drainingChests
+        or CoreFarm._userStop or S._unloaded then return false end
+    local entry=S.v3ChooseJob();if not entry then return false end
+    local job=S.v3BeginJob(entry.kind,entry.target);if not job then return false end
+    S._v3Visited[entry.target]=os.clock()+entry.delay
+    local ok,err=pcall(function()
+        if entry.kind=="hunt" then S.v3Hunt(job,entry.target)
+        elseif entry.kind=="mine" then S.v3MineOre(job,entry.target)
+        elseif entry.kind=="mines" then S.v3MineVisit(job,entry.target)
+        elseif entry.kind=="ammo" then S.v3BuyAmmo(job,entry.target)
+        elseif entry.kind=="collect" then S.v3CollectOne(job,entry.target)
+        elseif entry.kind=="village" then
+            local pos=S.getInstancePosition(entry.target)
+            if pos and S.v3Move(job,pos+Vector3.new(0,10,0)) then pcall(S.requestStreamAround,pos,1);task.wait(0.5) end
+        end
+    end)
+    S.v3EndJob(job,true)
+    if not ok then S.interactionNote("activity "..entry.kind,tostring(err):sub(1,140)) end
+    return true
+end
+
+function S.v3Tick()
+    if not S._v3 or S._unloaded or not S._uiReady then return true end
+    if S._v3.stock or S._v3Running then S.v3EnsureIndex() end
+    if not S._v3Running or S._v3Completed or CoreFarm._userStop or CoreFarm._leaving then return true end
+    if game.PlaceId==LOBBY_PLACE then
+        if not S._v3.autoQueue then S.coreSetStatus("Lobby · auto queue off");return true end
+        CoreFarm.enabled=true
+        return false
+    end
+    if game.PlaceId~=NA.placeId then return true end
+    if S._v3.chests then return false end
+    if not S.corePlayerReady() or S._activity then return true end
+    local movement=S._v3.hunt or S._v3.mine or S._v3.ammoBuy or S._v3.collect or S._v3.corpses or S._v3.bounties
+    if not movement then
+        if Autofarm.enabled then S.setAutofarm(false) end
+        S.coreSetStatus(S._v3.aura and "Kill aura · nearby targets" or "Ready · choose a farm")
+        return true
+    end
+    CoreFarm.openAll,CoreFarm._ownedRun=false,false
+    if not Autofarm.enabled then Autofarm.openChests=false;S.setAutofarm(true) end
+    return true
+end
+
+function S.v3AuraTick()
+    if not S._v3 or not S._v3Running or not S._v3.aura or CoreFarm._userStop or CoreFarm._leaving
+        or S._unloaded or game.PlaceId~=NA.placeId or S._chestInteraction or S._activity then return end
+    if os.clock()<(S._v3AttackAt or 0) then return end
+    local root=S.getRoot();if not root then return end
+    local targets={}
+    for mob in pairs(S.v3EnsureIndex().mobs) do
+        local pos=S.getInstancePosition(mob)
+        if S.v3AliveMob(mob) and S.v3SelectedMob(mob) and pos and (pos-root.Position).Magnitude<=S._v3.auraRange then targets[#targets+1]=mob end
+        if #targets>=8 then break end
+    end
+    S._v3AuraBusy=true
+    local ok,err=pcall(S.v3Attack,targets,nil)
+    S._v3AuraBusy=false
+    if not ok then error(err) end
+end
+
+function S.v3Await(reply,seconds,job)
+    if type(reply)~="table" or type(reply.andThen)~="function" then return true,reply end
+    local done,value=false,nil
+    local observer=reply:andThen(function(result)done,value=true,result end)
+    if observer and type(observer.catch)=="function" then observer:catch(function()done,value=true,false end)end
+    local deadline=os.clock()+seconds
+    while not done and not S._unloaded and (not job or S.v3JobActive(job)) and os.clock()<deadline do task.wait(0.06)end
+    return done,value
+end
+
+function S.v3RestockText()
+    if os.clock()>=(S._v3TimerAt or 0) then
+        S._v3TimerAt=os.clock()+5
+        local best
+        for _,timer in ipairs(CollectionService:GetTagged("TimerText")) do
+            local et=tonumber(timer:GetAttribute("EndTime"))
+            if et and (not best or et>best) then best=et end
+        end
+        if best then S._v3RestockEnd=best end
+    end
+    local et=S._v3RestockEnd
+    if not et then return "Restock timer not loaded" end
+    local remaining=math.max(0,math.floor(et-Workspace:GetServerTimeNow()))
+    return string.format("Restock %02d:%02d",math.floor(remaining/60),remaining%60)
+end
+
 function S.coreBootAutoload()
     if S._unloaded or CoreFarm._leaving or CoreFarm._userStop then return end
+    if S._v3 then S.v3QueueLoader() end
     S.corePullLoadedFlags()
     S.coreRequestRun()
 end
@@ -6334,3 +7188,16 @@ function S.setAntiAfk(enabled)
 end
 
 
+
+task.spawn(function()
+    while not S._unloaded do
+        task.wait(0.2)
+        if S._uiReady then
+            local ok,err=pcall(S.v3AuraTick)
+            if not ok and os.clock()>=(S._v3AuraErrorAt or 0) then
+                S._v3AuraErrorAt=os.clock()+10
+                S.interactionNote("aura",tostring(err):sub(1,120))
+            end
+        end
+    end
+end)
